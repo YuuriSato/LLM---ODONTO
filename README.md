@@ -29,12 +29,12 @@ logs/                    Logs antigos de treino/download/web
 tests/                   Imagens de teste locais
 ```
 
-## Como subir no localhost
+## Como iniciar o web service para teste
 
-Execute os comandos abaixo na raiz do projeto:
+Na raiz do projeto:
 
 ```powershell
-cd C:\Okta7\Chatbot_ImageVision
+cd C:\Scripts\Ollama_ImageOBS\Chatbot---LLM-RASA
 ```
 
 Crie e ative o ambiente virtual, caso ainda nao exista:
@@ -51,47 +51,31 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Configure a chave do Gemini antes de subir a aplicacao web. Para definir apenas
-no terminal atual:
+Confira o arquivo `.env`. Para um teste rapido sem LLM detalhada, ele pode ficar
+como esta. Para usar o checkbox de LLM detalhada via Gemini, preencha:
 
-```powershell
-$env:GEMINI_API_KEY = "sua-chave-do-gemini"
-$env:LLM_PROVIDER = "gemini"
-$env:GEMINI_MODEL = "gemini-2.5-flash"
+```env
+GEMINI_API_KEY=sua-chave-do-gemini
+LLM_PROVIDER=gemini
 ```
 
-Para deixar salvo no Windows para os proximos terminais:
+Suba o web service:
 
 ```powershell
-[Environment]::SetEnvironmentVariable("GEMINI_API_KEY", "sua-chave-do-gemini", "User")
-[Environment]::SetEnvironmentVariable("LLM_PROVIDER", "gemini", "User")
-[Environment]::SetEnvironmentVariable("GEMINI_MODEL", "gemini-2.5-flash", "User")
-```
-
-Depois de criar ou alterar essas variaveis, feche e abra o terminal novamente
-ou reinicie o servidor web. O processo do Python so enxerga variaveis que
-existiam quando ele foi iniciado.
-
-Suba a aplicacao web local:
-
-```powershell
-$env:OLLAMA_HOST = "http://127.0.0.1:11435"
-$env:VISION_MODEL = "codex-dental:latest"
-$env:WEB_PORT = "9090"
 python .\app\web_alteracao.py
 ```
 
-Acesse:
+Abra no navegador:
 
 ```text
 http://localhost:9090
 ```
 
-Se alterar `WEB_PORT`, troque tambem a porta no navegador. Exemplo:
+Se quiser testar em outra porta, altere `WEB_PORT` no `.env` e reinicie o
+servidor. Exemplo:
 
-```powershell
-$env:WEB_PORT = "8080"
-python .\app\web_alteracao.py
+```env
+WEB_PORT=8080
 ```
 
 ```text
@@ -104,10 +88,10 @@ edicoes localizadas por IA.
 
 O checkbox "Usar LLM detalhada via Gemini" envia a imagem otimizada e as
 evidencias locais para o Gemini. Sem o checkbox, a resposta usa apenas a
-pericia local rapida. Para voltar ao Ollama local no checkbox, defina:
+pericia local rapida. Para usar Ollama local no checkbox, altere no `.env`:
 
-```powershell
-$env:LLM_PROVIDER = "ollama"
+```env
+LLM_PROVIDER=ollama
 ```
 
 Arquivos persistidos pela UI:
