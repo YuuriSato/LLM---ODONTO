@@ -11,6 +11,13 @@ from typing import TypedDict
 import ollama
 from langgraph.graph import END, StateGraph
 
+try:
+    from env_loader import load_project_env
+except ModuleNotFoundError:  # pragma: no cover - supports python -m app.perito_flow
+    from app.env_loader import load_project_env
+
+load_project_env()
+
 
 DEFAULT_MODEL = "codex-dental"
 DEFAULT_OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11435")

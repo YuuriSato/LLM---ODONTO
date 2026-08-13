@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-import cgi
+import email.policy
 import json
 import os
 import re
 import sys
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
+from email.parser import BytesParser
+from io import BytesIO
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -15,6 +18,13 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 import ollama
+
+try:
+    from env_loader import load_project_env
+except ModuleNotFoundError:  # pragma: no cover - supports python -m app.web_alteracao
+    from app.env_loader import load_project_env
+
+load_project_env()
 
 try:
     from google import genai
@@ -498,15 +508,649 @@ HTML = """<!doctype html>
         justify-content: space-between;
       }
     }
+    :root {
+      color-scheme: dark;
+      font-family: Inter, "Segoe UI", Arial, Helvetica, sans-serif;
+      background: #070a10;
+      color: #eef4ff;
+      --bg: #070a10;
+      --panel: #111821;
+      --panel-2: #151c27;
+      --line: #2a3442;
+      --muted: #8190a8;
+      --soft: #c4cedd;
+      --text: #f7f9fc;
+      --orange: #ff7a00;
+      --orange-2: #f59f32;
+      --green: #12d18e;
+      --red: #f87171;
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      min-height: 100vh;
+      display: block;
+      padding: 0;
+      background:
+        radial-gradient(circle at 78% 8%, rgba(255, 122, 0, 0.08), transparent 28%),
+        linear-gradient(180deg, #0c111b 0%, #070a10 100%);
+      color: var(--text);
+    }
+    .app-shell {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 278px minmax(0, 1fr);
+      background: rgba(7, 10, 16, 0.96);
+    }
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      gap: 28px;
+      padding: 18px 16px;
+      border-right: 1px solid #202938;
+      background: #0a0f17;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 2px 18px;
+      border-bottom: 1px solid #202938;
+    }
+    .brand-mark {
+      width: 36px;
+      height: 36px;
+      border: 6px solid var(--orange);
+      border-right-color: transparent;
+      border-radius: 50%;
+    }
+    .brand-title {
+      display: grid;
+      gap: 2px;
+      font-weight: 800;
+      letter-spacing: 1px;
+    }
+    .brand-title small {
+      color: #ffffff;
+      font-size: 10px;
+      letter-spacing: 3px;
+    }
+    .nav {
+      display: grid;
+      gap: 6px;
+      color: #91a0b7;
+      font-weight: 700;
+      font-size: 14px;
+    }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-height: 42px;
+      padding: 0 14px;
+      border-radius: 8px;
+    }
+    .nav-item.active {
+      color: #fff;
+      border: 1px solid rgba(255, 122, 0, 0.56);
+      background: rgba(255, 122, 0, 0.14);
+    }
+    .workspace {
+      min-width: 0;
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+    .topbar {
+      min-height: 64px;
+      display: grid;
+      grid-template-columns: 1fr minmax(260px, 448px) auto;
+      align-items: center;
+      gap: 16px;
+      padding: 12px 30px;
+      border-bottom: 1px solid #202938;
+      background: rgba(13, 18, 27, 0.82);
+      backdrop-filter: blur(10px);
+    }
+    .workspace-title {
+      display: grid;
+      gap: 2px;
+    }
+    .workspace-title span {
+      color: #75849c;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 4px;
+    }
+    .workspace-title strong {
+      font-size: 18px;
+    }
+    .search-box {
+      height: 38px;
+      display: flex;
+      align-items: center;
+      border: 1px solid #2a3442;
+      border-radius: 8px;
+      padding: 0 14px;
+      color: #74839a;
+      background: #151b25;
+    }
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .icon-button,
+    .user-chip {
+      height: 38px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid #2a3442;
+      border-radius: 8px;
+      background: #151b25;
+      color: #dbe5f2;
+    }
+    .icon-button {
+      width: 40px;
+      font-size: 18px;
+    }
+    .user-chip {
+      gap: 9px;
+      padding: 0 12px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+    .user-avatar {
+      width: 26px;
+      height: 26px;
+      display: inline-grid;
+      place-items: center;
+      border-radius: 7px;
+      background: rgba(255, 122, 0, 0.18);
+      color: var(--orange-2);
+    }
+    main {
+      width: min(1500px, calc(100% - 64px));
+      margin: 28px auto 40px;
+      display: grid;
+      gap: 20px;
+      background: transparent;
+      border: 0;
+      border-radius: 0;
+      box-shadow: none;
+      overflow: visible;
+    }
+    header {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 0 0 6px;
+      border: 0;
+      background: transparent;
+    }
+    h1 {
+      margin: 0;
+      color: #fff;
+      font-size: clamp(28px, 4vw, 42px);
+      line-height: 1;
+      letter-spacing: 0;
+    }
+    p {
+      color: var(--muted);
+    }
+    .hero-copy {
+      max-width: 760px;
+      display: grid;
+      gap: 10px;
+    }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      width: fit-content;
+      min-height: 28px;
+      border: 1px solid rgba(255, 122, 0, 0.48);
+      border-radius: 6px;
+      padding: 0 10px;
+      color: var(--orange-2);
+      background: rgba(255, 122, 0, 0.1);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 3px;
+    }
+    section {
+      padding: 0;
+      display: grid;
+      gap: 18px;
+    }
+    .upload,
+    .result,
+    .history {
+      border: 1px solid #273241;
+      border-radius: 8px;
+      background: #111821;
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.26);
+    }
+    .upload {
+      padding: 20px;
+      display: grid;
+      gap: 16px;
+      border-style: solid;
+    }
+    .field {
+      gap: 8px;
+    }
+    .field label,
+    .toggle {
+      color: #dce6f4;
+      font-size: 14px;
+      font-weight: 800;
+    }
+    .hint {
+      color: #718096;
+      font-size: 13px;
+    }
+    input[type="file"] {
+      min-height: 44px;
+      border: 1px solid #303b4a;
+      border-radius: 8px;
+      padding: 9px;
+      background: #171e29;
+      color: #d9e3f0;
+    }
+    input[type="file"]::file-selector-button {
+      min-height: 30px;
+      margin-right: 12px;
+      border: 1px solid rgba(255, 122, 0, 0.5);
+      border-radius: 7px;
+      padding: 0 12px;
+      background: rgba(255, 122, 0, 0.12);
+      color: #ffad4f;
+      font-weight: 800;
+      cursor: pointer;
+    }
+    .toggle {
+      width: fit-content;
+      min-height: 42px;
+      border: 1px solid #303b4a;
+      border-radius: 8px;
+      padding: 0 12px;
+      background: #171e29;
+    }
+    .toggle input {
+      accent-color: var(--orange);
+    }
+    .preview {
+      max-height: 340px;
+      border: 1px solid #303b4a;
+      border-radius: 8px;
+      background: #080c12;
+    }
+    .actions {
+      display: grid;
+      grid-template-columns: minmax(180px, 1fr) repeat(3, auto);
+      align-items: center;
+      gap: 10px;
+    }
+    button {
+      min-height: 44px;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      padding: 0 16px;
+      background: var(--orange);
+      color: #071017;
+      font-weight: 900;
+    }
+    #submit {
+      width: 100%;
+      background: linear-gradient(180deg, #ff8a18 0%, #ff7900 100%);
+    }
+    .feedback-button {
+      background: #18202b;
+      border-color: #303b4a;
+      color: #dce6f4;
+    }
+    .feedback-button.modified {
+      background: rgba(248, 113, 113, 0.12);
+      border-color: rgba(248, 113, 113, 0.45);
+      color: #ffb4b4;
+    }
+    .feedback-button.ai {
+      background: rgba(255, 122, 0, 0.12);
+      border-color: rgba(255, 122, 0, 0.46);
+      color: #ffb15c;
+    }
+    .feedback-button.real {
+      background: rgba(18, 209, 142, 0.12);
+      border-color: rgba(18, 209, 142, 0.42);
+      color: #7df0c2;
+    }
+    .thinking {
+      border-color: #303b4a;
+      background: #151c27;
+    }
+    .thinking-head {
+      color: #dce6f4;
+    }
+    .percent,
+    .step.active {
+      color: var(--orange-2);
+    }
+    .bar {
+      background: #242e3c;
+    }
+    .bar-fill {
+      background: linear-gradient(90deg, var(--orange), #ffb057);
+    }
+    .step.done {
+      color: var(--green);
+    }
+    .status {
+      color: #95a4bb;
+    }
+    .result {
+      padding: 18px;
+    }
+    .verdict {
+      color: #fff;
+    }
+    .verdict.sim { color: var(--red); }
+    .verdict.nao { color: var(--green); }
+    .verdict.indeterminado { color: var(--orange-2); }
+    .forensics {
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      border-color: #303b4a;
+      background: #151c27;
+    }
+    .metric span {
+      color: #8c9bb2;
+    }
+    .metric strong,
+    pre {
+      color: #e8eef8;
+    }
+    .history {
+      padding: 18px;
+      border-top: 1px solid #273241;
+    }
+    .history-head h2 {
+      color: #fff;
+    }
+    .history-tabs {
+      gap: 8px;
+    }
+    .history-tab,
+    .history-pager,
+    .history-empty,
+    .history-item {
+      border-color: #303b4a;
+      background: #151c27;
+      color: #c9d3e1;
+    }
+    .history-tab.active {
+      border-color: rgba(255, 122, 0, 0.66);
+      background: rgba(255, 122, 0, 0.13);
+      color: #ffb25d;
+    }
+    .history-tab-count,
+    .history-tab.active .history-tab-count {
+      background: #222c3a;
+      color: #dce6f4;
+    }
+    .history-range,
+    .history-page-label,
+    .history-meta,
+    .history-empty {
+      color: #8d9bb0;
+    }
+    .history-page-button {
+      border-color: #303b4a;
+      background: #111821;
+      color: var(--orange-2);
+    }
+    .history-page-button:disabled {
+      background: #151c27;
+      color: #546176;
+    }
+    .history-item img {
+      border-color: #303b4a;
+      background: #080c12;
+    }
+    .history-report {
+      color: #cbd5e1;
+    }
+    .nav-item {
+      border: 0;
+      width: 100%;
+      justify-content: flex-start;
+      background: transparent;
+      color: #91a0b7;
+      cursor: pointer;
+    }
+    .page {
+      display: none;
+      gap: 18px;
+    }
+    .page.active {
+      display: grid;
+    }
+    .analysis-layout {
+      display: grid;
+      gap: 18px;
+    }
+    .dashboard-grid,
+    .settings-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .dashboard-card,
+    .settings-panel {
+      border: 1px solid #273241;
+      border-radius: 8px;
+      padding: 18px;
+      background: #111821;
+    }
+    .dashboard-card span,
+    .settings-panel span {
+      display: block;
+      color: #8190a8;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+    .dashboard-card strong {
+      display: block;
+      margin-top: 10px;
+      color: #fff;
+      font-size: 30px;
+      line-height: 1;
+    }
+    .dashboard-card p,
+    .settings-panel p {
+      margin-top: 8px;
+      color: #8d9bb0;
+      font-size: 13px;
+    }
+    .settings-panel {
+      display: grid;
+      gap: 12px;
+    }
+    .settings-panel.wide {
+      grid-column: span 2;
+    }
+    .settings-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      min-height: 42px;
+    }
+    .settings-row input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      accent-color: var(--orange);
+    }
+    select {
+      width: 100%;
+      min-height: 42px;
+      border: 1px solid #303b4a;
+      border-radius: 8px;
+      padding: 0 12px;
+      background: #171e29;
+      color: #d9e3f0;
+      font-weight: 700;
+    }
+    .agent-list {
+      display: grid;
+      gap: 8px;
+    }
+    .agent-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      border: 1px solid #303b4a;
+      border-radius: 8px;
+      padding: 10px 12px;
+      background: #151c27;
+      color: #dce6f4;
+      font-size: 13px;
+    }
+    .agent-item small {
+      color: #8d9bb0;
+    }
+    .agent-badge {
+      border-radius: 6px;
+      padding: 4px 8px;
+      background: rgba(18, 209, 142, 0.12);
+      color: #7df0c2;
+      font-weight: 800;
+    }
+    .agent-badge.off {
+      background: rgba(248, 113, 113, 0.12);
+      color: #ffb4b4;
+    }
+    @media (max-width: 980px) {
+      .app-shell {
+        grid-template-columns: 1fr;
+      }
+      .sidebar {
+        position: static;
+        height: auto;
+        padding: 14px 18px;
+      }
+      .nav {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+      .nav-item {
+        justify-content: center;
+      }
+      .topbar {
+        grid-template-columns: 1fr;
+      }
+      .search-box,
+      .top-actions {
+        display: none;
+      }
+      main {
+        width: min(100% - 28px, 900px);
+        margin-top: 20px;
+      }
+    }
+    @media (max-width: 720px) {
+      header {
+        align-items: start;
+        flex-direction: column;
+      }
+      .nav {
+        grid-template-columns: 1fr 1fr;
+      }
+      .actions {
+        grid-template-columns: 1fr;
+      }
+      .dashboard-grid,
+      .settings-grid {
+        grid-template-columns: 1fr;
+      }
+      .settings-panel.wide {
+        grid-column: auto;
+      }
+      .feedback-button {
+        width: 100%;
+      }
+      .forensics {
+        grid-template-columns: 1fr;
+      }
+    }
   </style>
 </head>
 <body>
-  <main>
-    <header>
-      <h1>Perito Visual</h1>
-      <p>Envie uma foto, print ou imagem para verificar sinais de edicao manual, alteracao digital ou geracao/edicao por IA.</p>
-    </header>
-    <section>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Navegacao principal">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"></div>
+        <div class="brand-title">
+          <strong>OKTA7</strong>
+          <small>TECHNOLOGIES</small>
+        </div>
+      </div>
+      <nav class="nav">
+        <button class="nav-item" type="button" data-page="dashboard">Dashboard</button>
+        <button class="nav-item active" type="button" data-page="analyze">Perito Visual</button>
+        <button class="nav-item" type="button" data-page="history">Historico</button>
+        <button class="nav-item" type="button" data-page="settings">Settings</button>
+      </nav>
+    </aside>
+    <div class="workspace">
+      <div class="topbar">
+        <div class="workspace-title">
+          <span>WORKSPACE</span>
+          <strong>TesteCli</strong>
+        </div>
+        <div class="search-box">Buscar analises, imagens, evidencias...</div>
+        <div class="top-actions" aria-label="Acoes da conta">
+          <div class="icon-button" title="Tema">o</div>
+          <div class="icon-button" title="Notificacoes">!</div>
+          <div class="user-chip"><span class="user-avatar">Y</span> Yuri Sato</div>
+        </div>
+      </div>
+      <main>
+        <section class="page" data-page-panel="dashboard">
+          <header>
+            <div class="hero-copy">
+              <span class="status-pill">DASHBOARD</span>
+              <h1>Resumo operacional</h1>
+              <p>Visao rapida das analises salvas, classificacoes e agentes disponiveis para teste.</p>
+            </div>
+          </header>
+          <div class="dashboard-grid">
+            <div class="dashboard-card"><span>Total de analises</span><strong id="dashTotal">0</strong><p>Registros armazenados localmente.</p></div>
+            <div class="dashboard-card"><span>Modificados / IA</span><strong id="dashModified">0</strong><p>Casos com sinal de alteracao.</p></div>
+            <div class="dashboard-card"><span>Reais</span><strong id="dashReal">0</strong><p>Imagens classificadas como integras.</p></div>
+            <div class="dashboard-card"><span>Inconclusivos</span><strong id="dashInconclusive">0</strong><p>Casos limitados por qualidade ou evidencia.</p></div>
+          </div>
+          <div class="settings-panel">
+            <span>Agentes ativos</span>
+            <div class="agent-list" id="dashboardAgents">
+              <div class="agent-item">Carregando agentes...</div>
+            </div>
+          </div>
+        </section>
+        <section class="page active" data-page-panel="analyze">
+        <header>
+          <div class="hero-copy">
+            <span class="status-pill">PERICIA LOCAL</span>
+            <h1>Perito Visual</h1>
+            <p>Envie uma foto, print ou imagem para verificar sinais de edicao manual, alteracao digital ou geracao/edicao por IA.</p>
+          </div>
+        </header>
+    <div class="analysis-layout">
       <form class="upload" id="form">
         <div class="field">
           <label for="image">Imagem suspeita</label>
@@ -559,8 +1203,9 @@ HTML = """<!doctype html>
         </div>
         <pre id="report"></pre>
       </div>
-    </section>
-    <section class="history">
+    </div>
+        </section>
+    <section class="page history" data-page-panel="history">
       <div class="history-head">
         <h2>Historico de analises</h2>
         <p id="historyCount">0 registros</p>
@@ -584,7 +1229,39 @@ HTML = """<!doctype html>
         <div class="history-empty">Nenhuma analise armazenada ainda.</div>
       </div>
     </section>
-  </main>
+        <section class="page" data-page-panel="settings">
+          <header>
+            <div class="hero-copy">
+              <span class="status-pill">DEV SETTINGS</span>
+              <h1>Settings</h1>
+              <p>Opcoes locais para testar a interface, alternar agentes e controlar a quantidade de texto exibida.</p>
+            </div>
+          </header>
+          <div class="settings-grid">
+            <div class="settings-panel wide">
+              <span>Evidencias</span>
+              <label class="settings-row" for="showFullEvidence">
+                <strong>Exibir todo texto de evidencias</strong>
+                <input id="showFullEvidence" type="checkbox">
+              </label>
+              <p>Quando desligado, a tela mostra uma versao menor. O historico continua armazenando o texto completo.</p>
+            </div>
+            <div class="settings-panel wide">
+              <span>Agente detalhado</span>
+              <select id="agentSelect"></select>
+              <p>Usado quando o checkbox de LLM detalhada estiver marcado na analise.</p>
+            </div>
+            <div class="settings-panel wide">
+              <span>Agentes detectados</span>
+              <div class="agent-list" id="agentList">
+                <div class="agent-item">Carregando agentes...</div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
   <script>
     const form = document.getElementById('form');
     const input = document.getElementById('image');
@@ -622,12 +1299,25 @@ HTML = """<!doctype html>
     const historyPageLabel = document.getElementById('historyPageLabel');
     const historyPrev = document.getElementById('historyPrev');
     const historyNext = document.getElementById('historyNext');
+    const navItems = Array.from(document.querySelectorAll('[data-page]'));
+    const pages = Array.from(document.querySelectorAll('[data-page-panel]'));
+    const dashTotal = document.getElementById('dashTotal');
+    const dashModified = document.getElementById('dashModified');
+    const dashReal = document.getElementById('dashReal');
+    const dashInconclusive = document.getElementById('dashInconclusive');
+    const dashboardAgents = document.getElementById('dashboardAgents');
+    const showFullEvidenceInput = document.getElementById('showFullEvidence');
+    const agentSelect = document.getElementById('agentSelect');
+    const agentList = document.getElementById('agentList');
     let progressTimer = null;
     let progressValue = 0;
     let estimatedSeconds = 75;
     let progressStartedAt = 0;
     let activeHistoryTab = 'all';
     let historyPage = 1;
+    let lastResultPayload = null;
+    let showFullEvidence = localStorage.getItem('perito.showFullEvidence') === '1';
+    let selectedAgent = localStorage.getItem('perito.selectedAgent') || '';
     let historyMeta = {
       page: 1,
       total_pages: 1,
@@ -638,6 +1328,19 @@ HTML = """<!doctype html>
       end: 0,
       counts: {}
     };
+
+    showFullEvidenceInput.checked = showFullEvidence;
+
+    function setActivePage(pageName) {
+      navItems.forEach((item) => {
+        item.classList.toggle('active', item.dataset.page === pageName);
+      });
+      pages.forEach((page) => {
+        page.classList.toggle('active', page.dataset.pagePanel === pageName);
+      });
+      if (pageName === 'history' || pageName === 'dashboard') loadHistory();
+      if (pageName === 'settings' || pageName === 'dashboard') loadAgents();
+    }
 
     function setProgress(value, label) {
       progressValue = Math.max(progressValue, Math.min(value, 100));
@@ -739,6 +1442,79 @@ HTML = """<!doctype html>
       return `${status} - ${evidence}`;
     }
 
+    function firstReportValue(reportText, label) {
+      const regex = new RegExp(`^${label}:\\s*(.+)$`, 'im');
+      const match = String(reportText || '').match(regex);
+      return match ? match[1].trim() : '';
+    }
+
+    function truncateText(text, maxLength) {
+      const clean = String(text || '').replace(/\\s+/g, ' ').trim();
+      if (clean.length <= maxLength) return clean;
+      return `${clean.slice(0, maxLength - 3).trim()}...`;
+    }
+
+    function evidenceSummary(payload) {
+      const evidenceText = Array.isArray(payload.forensic_evidence)
+        ? payload.forensic_evidence.filter(Boolean).join('; ')
+        : String(payload.forensic_evidence || '');
+      const source = evidenceText || firstReportValue(payload.report, 'EVIDENCIAS');
+      const parts = source
+        .split(';')
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .map((part) => part.replace(/proximo de exemplo calibrado:\\s*[a-f0-9-]+\\.(png|jpg|jpeg|webp|bmp)/i, 'proximo de exemplo calibrado'))
+        .filter((part, index, list) => list.findIndex((item) => item.toLowerCase() === part.toLowerCase()) === index)
+        .slice(0, 4);
+      return truncateText(parts.join('; ') || source || '-', 320);
+    }
+
+    function fullEvidenceText(payload) {
+      return Array.isArray(payload.forensic_evidence)
+        ? payload.forensic_evidence.filter(Boolean).join('; ')
+        : String(payload.forensic_evidence || '');
+    }
+
+    function visibleEvidenceText(payload) {
+      return showFullEvidence ? (fullEvidenceText(payload) || '-') : evidenceSummary(payload);
+    }
+
+    function compactReportText(payload) {
+      const reportText = String(payload.report || '');
+      const confidence = firstReportValue(reportText, 'CONFIANCA');
+      const justification = firstReportValue(reportText, 'JUSTIFICATIVA');
+      const type = firstReportValue(reportText, 'TIPO');
+      const score = firstReportValue(reportText, 'SCORE_ALTERACAO');
+      const lines = [`VEREDITO: ${payload.verdict || firstReportValue(reportText, 'VEREDITO') || 'INDETERMINADO'}`];
+
+      if (confidence) lines.push(`CONFIANCA: ${confidence}`);
+      if (type) lines.push(`TIPO: ${type}`);
+      if (score) lines.push(`SCORE_ALTERACAO: ${score}`);
+      if (justification) lines.push(`JUSTIFICATIVA: ${truncateText(justification, 320)}`);
+      lines.push(`EVIDENCIAS: ${evidenceSummary(payload)}`);
+      return lines.join('\\n');
+    }
+
+    function visibleReportText(payload) {
+      return showFullEvidence ? (payload.report || compactReportText(payload)) : compactReportText(payload);
+    }
+
+    function renderResultPayload(payload) {
+      lastResultPayload = payload;
+      verdict.textContent = `Veredito: ${payload.verdict}`;
+      verdict.className = `verdict ${verdictClass(payload.verdict)}`;
+      report.textContent = visibleReportText(payload);
+      report.dataset.fullReport = payload.report || '';
+      forensicScore.textContent = payload.forensic_score !== undefined ? `${payload.forensic_score}%` : '-';
+      forensicSource.textContent = payload.source || '-';
+      forensicQuality.textContent = qualityText(payload);
+      forensicAudit.textContent = auditText(payload);
+      forensicEvidence.textContent = visibleEvidenceText(payload);
+      forensicEvidence.title = fullEvidenceText(payload);
+      forensics.style.display = 'grid';
+      result.style.display = 'block';
+    }
+
     function isModifiedHistory(item) {
       const verdict = String(item.verdict || '').toUpperCase();
       return verdict.includes('MODIFICADO') || verdict.includes('ALTERADA') || verdict.includes('IA');
@@ -792,6 +1568,39 @@ HTML = """<!doctype html>
       historyPrev.disabled = historyMeta.page <= 1;
       historyNext.disabled = historyMeta.page >= historyMeta.total_pages;
       updateHistoryTabs(historyMeta.counts);
+      dashTotal.textContent = historyMeta.total_all || 0;
+      dashModified.textContent = historyMeta.counts.modified || 0;
+      dashReal.textContent = historyMeta.counts.real || 0;
+      dashInconclusive.textContent = historyMeta.counts.inconclusive || 0;
+    }
+
+    function renderAgents(payload) {
+      const agents = payload.agents || [];
+      const availableAgents = agents.filter((agent) => agent.available);
+      const selected = selectedAgent || payload.default_provider || 'gemini';
+
+      agentSelect.innerHTML = '';
+      for (const agent of availableAgents) {
+        if (!agent.provider) continue;
+        const option = document.createElement('option');
+        option.value = agent.provider;
+        option.textContent = agent.name;
+        option.selected = agent.provider === selected;
+        agentSelect.appendChild(option);
+      }
+      if (!agentSelect.value && agentSelect.options.length) {
+        agentSelect.selectedIndex = 0;
+        selectedAgent = agentSelect.value;
+      }
+
+      const html = agents.map((agent) => `
+        <div class="agent-item">
+          <div><strong>${agent.name}</strong><br><small>${agent.detail || ''}</small></div>
+          <span class="agent-badge ${agent.available ? '' : 'off'}">${agent.available ? 'disponivel' : 'indisponivel'}</span>
+        </div>
+      `).join('');
+      agentList.innerHTML = html || '<div class="agent-item">Nenhum agente detectado.</div>';
+      dashboardAgents.innerHTML = html || '<div class="agent-item">Nenhum agente detectado.</div>';
     }
 
     function renderHistory(payload) {
@@ -843,7 +1652,8 @@ HTML = """<!doctype html>
 
         const itemReport = document.createElement('div');
         itemReport.className = 'history-report';
-        itemReport.textContent = item.report || '';
+        itemReport.textContent = visibleReportText(item);
+        itemReport.title = item.report || '';
 
         body.append(meta, itemVerdict, itemReport);
         card.append(imageBox, body);
@@ -904,16 +1714,7 @@ HTML = """<!doctype html>
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || 'Falha ao salvar exemplo.');
 
-        verdict.textContent = `Veredito: ${payload.verdict}`;
-        verdict.className = `verdict ${verdictClass(payload.verdict)}`;
-        report.textContent = payload.report;
-        forensicScore.textContent = payload.forensic_score !== undefined ? `${payload.forensic_score}%` : '-';
-        forensicSource.textContent = payload.source || '-';
-        forensicQuality.textContent = qualityText(payload);
-        forensicAudit.textContent = auditText(payload);
-        forensicEvidence.textContent = (payload.forensic_evidence || []).join('; ') || '-';
-        forensics.style.display = 'grid';
-        result.style.display = 'block';
+        renderResultPayload(payload);
         statusBox.textContent = originalInput.files[0]
           ? 'Par salvo. O projeto local vai usar o padrao de diferenca entre suspeita e original nas proximas analises.'
           : 'Exemplo salvo. O projeto local vai usar esse perfil visual para reconhecer padroes parecidos nas proximas analises.';
@@ -1018,16 +1819,7 @@ HTML = """<!doctype html>
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || 'Falha na analise.');
 
-        verdict.textContent = `Veredito: ${payload.verdict}`;
-        verdict.className = `verdict ${verdictClass(payload.verdict)}`;
-        report.textContent = payload.report;
-        forensicScore.textContent = payload.forensic_score !== undefined ? `${payload.forensic_score}%` : '-';
-        forensicSource.textContent = payload.source || '-';
-        forensicQuality.textContent = qualityText(payload);
-        forensicAudit.textContent = auditText(payload);
-        forensicEvidence.textContent = (payload.forensic_evidence || []).join('; ') || '-';
-        forensics.style.display = 'grid';
-        result.style.display = 'block';
+        renderResultPayload(payload);
         finishThinking('Resposta pronta.');
         statusBox.textContent = payload.duration_seconds
           ? `Analise concluida em ${payload.duration_seconds}s.`
@@ -2163,6 +2955,33 @@ def json_response(handler: BaseHTTPRequestHandler, status: HTTPStatus, payload: 
     handler.wfile.write(body)
 
 
+@dataclass
+class MultipartField:
+    filename: str
+    file: BytesIO
+    value: str = ""
+
+
+def parse_multipart_form(handler: BaseHTTPRequestHandler, content_type: str) -> dict[str, MultipartField]:
+    content_length = int(handler.headers.get("Content-Length", "0") or "0")
+    body = handler.rfile.read(content_length)
+    message = BytesParser(policy=email.policy.default).parsebytes(
+        b"Content-Type: " + content_type.encode("utf-8") + b"\r\n\r\n" + body
+    )
+
+    form: dict[str, MultipartField] = {}
+    for part in message.iter_parts():
+        name = part.get_param("name", header="content-disposition")
+        if not name:
+            continue
+
+        filename = part.get_filename() or ""
+        payload = part.get_payload(decode=True) or b""
+        value = "" if filename else payload.decode(part.get_content_charset() or "utf-8", errors="replace")
+        form[name] = MultipartField(filename=filename, file=BytesIO(payload), value=value)
+    return form
+
+
 def save_uploaded_image(field: Any) -> Path:
     extension = Path(field.filename).suffix.lower()
     if extension not in ALLOWED_EXTENSIONS:
@@ -2245,14 +3064,11 @@ class PeritoHandler(BaseHTTPRequestHandler):
             json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Envie um formulario multipart com o campo image."})
             return
 
-        form = cgi.FieldStorage(
-            fp=self.rfile,
-            headers=self.headers,
-            environ={
-                "REQUEST_METHOD": "POST",
-                "CONTENT_TYPE": content_type,
-            },
-        )
+        try:
+            form = parse_multipart_form(self, content_type)
+        except ValueError:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Formulario multipart invalido."})
+            return
         field = form["image"] if "image" in form else None
         if field is None or not getattr(field, "filename", ""):
             json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Nenhuma imagem foi enviada."})

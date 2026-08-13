@@ -1,5 +1,78 @@
 [
   {
+    "id": "49221932c3c24389a34fb94344928991",
+    "created_at": "2026-08-11 00:37:42",
+    "filename": "Captura de tela 2026-08-11 003618.png",
+    "stored_filename": "49221932c3c24389a34fb94344928991.png",
+    "image_url": "/uploads/49221932c3c24389a34fb94344928991.png",
+    "original_filename": null,
+    "original_stored_filename": null,
+    "original_image_url": null,
+    "model": "codex-dental:latest",
+    "verdict": "MODIFICADO",
+    "report": "VEREDITO: MODIFICADO\nCONFIANCA: media\nJUSTIFICATIVA: A imagem apresenta modificacao visual detectada, como linha, seta, desenho ou anotacao sobreposta.\nTIPO: MODIFICADO\nSCORE_ALTERACAO: 72\nEVIDENCIAS: qualidade insuficiente para pericia visual confiavel: resolucao baixa: menor lado abaixo de 320 px; resolucao baixa: menos de 0.18 megapixel; nitidez inconsistente entre regioes, com contraste fino variando mais do que o esperado para uma captura uniforme; mapa de nitidez e ruido aponta transicoes regionais pouco uniformes; imagem apresenta alto nivel de detalhe e ruido, exigindo cautela para diferenciar textura real de artefato; proximo de exemplo calibrado: 1eed5c04bf474d66be492905b39a4434.png",
+    "duration_seconds": "1.40",
+    "source": "forense_local",
+    "forensic_score": 72,
+    "forensic_evidence": [
+      "qualidade insuficiente para pericia visual confiavel: resolucao baixa: menor lado abaixo de 320 px; resolucao baixa: menos de 0.18 megapixel",
+      "nitidez inconsistente entre regioes, com contraste fino variando mais do que o esperado para uma captura uniforme",
+      "mapa de nitidez e ruido aponta transicoes regionais pouco uniformes",
+      "imagem apresenta alto nivel de detalhe e ruido, exigindo cautela para diferenciar textura real de artefato",
+      "proximo de exemplo calibrado: 1eed5c04bf474d66be492905b39a4434.png"
+    ],
+    "forensic_quality": "insuficiente",
+    "forensic_metrics": {
+      "image_width": 423,
+      "image_height": 277,
+      "image_megapixels": 0.117,
+      "image_min_side": 277,
+      "ela_mean": 1.732,
+      "ela_p95": 4.0,
+      "ela_block_cv": 0.233,
+      "laplacian_var": 548.125,
+      "sharpness_block_cv": 1.505,
+      "noise_mean": 3.094,
+      "noise_block_cv": 0.655,
+      "saturated_overlay_ratio": 0.0,
+      "marker_overlay_ratio": 0.0,
+      "green_marker_ratio": 0.0,
+      "red_marker_ratio": 0.0,
+      "blue_marker_ratio": 0.0,
+      "overlay_regions": [],
+      "quality_status": "insuficiente",
+      "quality_reasons": [
+        "resolucao baixa: menor lado abaixo de 320 px",
+        "resolucao baixa: menos de 0.18 megapixel"
+      ],
+      "blur_level": "baixo",
+      "dhash": "c1c1e070b0c0c060",
+      "nearest_calibration_distance": 13,
+      "feature_profile": {
+        "ela_mean": 0.14433333333333334,
+        "ela_p95": 0.125,
+        "ela_block_cv": 0.145625,
+        "laplacian_log": 0.7885407627869929,
+        "sharpness_block_cv": 0.836111111111111,
+        "noise_mean": 0.38675,
+        "noise_block_cv": 0.409375,
+        "saturated_overlay": 0.0,
+        "marker_overlay": 0.0,
+        "green_marker": 0.0
+      },
+      "nearest_pattern": {
+        "label": "MODIFICADO",
+        "distance": 0.0345,
+        "filename": "25f495490c5541da9ff66f8a211b6994.png"
+      }
+    },
+    "llm_raw_response": null,
+    "llm_initial_response": null,
+    "llm_audit_response": null,
+    "audit_status": "nao_executada",
+    "audit_evidence": []
+  },
+  {
     "id": "1eed5c04bf474d66be492905b39a4434",
     "created_at": "2026-07-09 15:31:10",
     "filename": "fix.png",
@@ -39,7 +112,9 @@
       "quality_status": "boa",
       "quality_reasons": [],
       "blur_level": "baixo"
-    }
+    },
+    "audit_status": "nao_executada",
+    "audit_evidence": []
   },
   {
     "id": "7307ca0bd2844181b0c5590830112bfa",
