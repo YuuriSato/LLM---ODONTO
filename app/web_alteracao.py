@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
+from urllib.request import urlopen
 
 import ollama
 
@@ -945,7 +946,7 @@ HTML = """<!doctype html>
     .dashboard-grid,
     .settings-grid {
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 14px;
     }
     .dashboard-card,
@@ -1088,7 +1089,11 @@ HTML = """<!doctype html>
         grid-template-columns: 1fr;
       }
     }
-  </style>
+
+@media (min-width: 1024px) {
+ .dashboard-grid, .settings-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+</style>
 </head>
 <body>
   <div class="app-shell">
@@ -1576,7 +1581,7 @@ HTML = """<!doctype html>
 
     function renderAgents(payload) {
       const agents = payload.agents || [];
-      const availableAgents = agents.filter((agent) => agent.available);
+      const availableAgents = agents.filter((agent) => agent.available && agent.mode === 'llm');
       const selected = selectedAgent || payload.default_provider || 'gemini';
 
       agentSelect.innerHTML = '';
@@ -1590,8 +1595,15 @@ HTML = """<!doctype html>
       }
       if (!agentSelect.value && agentSelect.options.length) {
         agentSelect.selectedIndex = 0;
-        selectedAgent = agentSelect.value;
       }
+      if (!agentSelect.options.length) {
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = 'Nenhum agente detalhado disponivel';
+        agentSelect.appendChild(option);
+      }
+      selectedAgent = agentSelect.value;
+      if (selectedAgent) localStorage.setItem('perito.selectedAgent', selectedAgent);
 
       const html = agents.map((agent) => `
         <div class="agent-item">
@@ -1758,6 +1770,36 @@ HTML = """<!doctype html>
       }
     }
 
+    async function loadAgents() {
+      try {
+        const response = await fetch('/agents');
+        if (!response.ok) return;
+        const payload = await response.json();
+        renderAgents(payload);
+      } catch (_error) {
+        const fallback = '<div class="agent-item">Nao foi possivel carregar agentes.</div>';
+        agentList.innerHTML = fallback;
+        dashboardAgents.innerHTML = fallback;
+      }
+    }
+
+    navItems.forEach((item) => {
+      item.addEventListener('click', () => setActivePage(item.dataset.page || 'analyze'));
+    });
+
+    showFullEvidenceInput.addEventListener('change', () => {
+      showFullEvidence = showFullEvidenceInput.checked;
+      localStorage.setItem('perito.showFullEvidence', showFullEvidence ? '1' : '0');
+      if (lastResultPayload) renderResultPayload(lastResultPayload);
+      renderHistory({ history: [], pagination: historyMeta });
+      loadHistory();
+    });
+
+    agentSelect.addEventListener('change', () => {
+      selectedAgent = agentSelect.value;
+      localStorage.setItem('perito.selectedAgent', selectedAgent);
+    });
+
     input.addEventListener('change', () => {
       const file = input.files[0];
       result.style.display = 'none';
@@ -1812,6 +1854,7 @@ HTML = """<!doctype html>
       }
       if (useLlmInput.checked) {
         data.append('use_llm', '1');
+        data.append('agent_provider', selectedAgent || agentSelect.value || '');
       }
 
       try {
@@ -1839,6 +1882,7 @@ HTML = """<!doctype html>
 
     loadHistory();
     loadMetrics();
+    loadAgents();
   </script>
 </body>
 </html>
@@ -2612,6 +2656,45 @@ def estimated_analysis_seconds() -> float:
     return (durations[midpoint - 1] + durations[midpoint]) / 2
 
 
+def ollama_is_available() -> bool:
+    try:
+        base_url = OLLAMA_HOST
+        if not base_url.startswith(("http://", "https://")):
+            base_url = f"http://{base_url}"
+        with urlopen(f"{base_url.rstrip('/')}/api/tags", timeout=1.5) as response:
+            return 200 <= response.status < 300
+    except Exception:
+        return False
+
+
+def available_agents() -> list[dict[str, Any]]:
+    gemini_ready = genai is not None and bool(GEMINI_API_KEY)
+    ollama_ready = ollama_is_available()
+    return [
+        {
+            "provider": "local",
+            "name": "Pericia local rapida",
+            "available": True,
+            "detail": "Sempre disponivel; usa metricas locais, calibracao e comparacao.",
+            "mode": "local",
+        },
+        {
+            "provider": "gemini",
+            "name": f"Gemini detalhado ({GEMINI_MODEL})",
+            "available": gemini_ready,
+            "detail": "Disponivel quando GEMINI_API_KEY esta configurada.",
+            "mode": "llm",
+        },
+        {
+            "provider": "ollama",
+            "name": f"Ollama local ({MODEL})",
+            "available": ollama_ready,
+            "detail": f"Verifica {OLLAMA_HOST}; use para analise local detalhada.",
+            "mode": "llm",
+        },
+    ]
+
+
 def save_history(history: list[dict[str, Any]]) -> None:
     HISTORY_FILE.write_text(
         json.dumps(history[:100], ensure_ascii=False, indent=2),
@@ -2747,8 +2830,8 @@ def call_ollama_llm(prompt: str, image_path: Path) -> str:
     return str(response["response"])
 
 
-def call_detailed_llm(prompt: str, image_path: Path) -> tuple[str, str, str]:
-    provider = LLM_PROVIDER or "gemini"
+def call_detailed_llm(prompt: str, image_path: Path, provider: str | None = None) -> tuple[str, str, str]:
+    provider = (provider or LLM_PROVIDER or "gemini").strip().lower()
     if provider == "ollama":
         return call_ollama_llm(prompt, image_path), "hibrido_local_ollama", MODEL
     if provider not in {"gemini", "google", "gemini_flash"}:
@@ -2875,8 +2958,10 @@ def run_clinical_audit(
     initial_report: str,
     initial_raw_response: str,
     image_path: Path,
+    provider: str | None = None,
 ) -> dict[str, Any]:
-    if LLM_PROVIDER not in {"gemini", "google", "gemini_flash", ""}:
+    provider = (provider or LLM_PROVIDER or "gemini").strip().lower()
+    if provider not in {"gemini", "google", "gemini_flash", ""}:
         return {"audit_status": "nao_executada", "audit_evidence": []}
     if not should_run_clinical_audit(initial_report, forensic):
         return {"audit_status": "nao_executada", "audit_evidence": []}
@@ -2900,7 +2985,12 @@ def run_clinical_audit(
         }
 
 
-def analyze_image(image_path: Path, original_path: Path | None = None, use_llm: bool = False) -> dict[str, Any]:
+def analyze_image(
+    image_path: Path,
+    original_path: Path | None = None,
+    use_llm: bool = False,
+    agent_provider: str | None = None,
+) -> dict[str, Any]:
     total_started = time.perf_counter()
     forensic = analyze_forensics(
         image_path,
@@ -2924,9 +3014,9 @@ def analyze_image(image_path: Path, original_path: Path | None = None, use_llm: 
     prompt = build_advanced_codex_prompt(forensic)
 
     analysis_path = prepare_analysis_image(image_path)
-    response_text, llm_source, llm_model = call_detailed_llm(prompt, analysis_path)
+    response_text, llm_source, llm_model = call_detailed_llm(prompt, analysis_path, provider=agent_provider)
     report = normalize_llm_response(response_text)
-    audit_result = run_clinical_audit(forensic, report, response_text, analysis_path)
+    audit_result = run_clinical_audit(forensic, report, response_text, analysis_path, provider=agent_provider)
     normalized = merge_audit_and_forensics(report, audit_result, forensic)
     return {
         "verdict": normalized["verdict"],
@@ -3017,6 +3107,19 @@ class PeritoHandler(BaseHTTPRequestHandler):
                 self,
                 HTTPStatus.OK,
                 {"estimated_seconds": round(estimated_analysis_seconds(), 2)},
+            )
+            return
+
+        if request_path == "/agents":
+            agents = available_agents()
+            preferred = LLM_PROVIDER if LLM_PROVIDER in {"gemini", "google", "gemini_flash", "ollama"} else "gemini"
+            json_response(
+                self,
+                HTTPStatus.OK,
+                {
+                    "default_provider": "gemini" if preferred in {"google", "gemini_flash"} else preferred,
+                    "agents": agents,
+                },
             )
             return
 
@@ -3188,9 +3291,10 @@ class PeritoHandler(BaseHTTPRequestHandler):
             return
 
         use_llm = "use_llm" in form and str(getattr(form["use_llm"], "value", "")).lower() in {"1", "true", "sim", "on"}
+        agent_provider = str(getattr(form.get("agent_provider"), "value", "") or "").strip().lower() or None
 
         try:
-            result = analyze_image(image_path, original_path, use_llm=use_llm)
+            result = analyze_image(image_path, original_path, use_llm=use_llm, agent_provider=agent_provider)
         except ollama.ResponseError as exc:
             json_response(self, HTTPStatus.BAD_GATEWAY, {"error": f"Erro do Ollama: {exc}"})
             return
