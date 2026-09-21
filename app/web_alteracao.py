@@ -14,11 +14,17 @@ from io import BytesIO
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import RLock
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 from urllib.request import urlopen
 
 import ollama
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from app.ai.config import get_settings
+from app.ai.gemini_client import GeminiClient
+from app.ai.pipeline import run_integrity_pipeline
 
 try:
     from env_loader import load_project_env
@@ -26,13 +32,6 @@ except ModuleNotFoundError:  # pragma: no cover - supports python -m app.web_alt
     from app.env_loader import load_project_env
 
 load_project_env()
-
-try:
-    from google import genai
-    from google.genai import types as genai_types
-except ImportError:  # pragma: no cover - Gemini is optional unless LLM_PROVIDER=gemini
-    genai = None
-    genai_types = None
 
 try:
     from local_forensics import (
@@ -67,14 +66,11 @@ except ImportError:  # pragma: no cover - fallback for minimal installs
 PORT = int(os.environ.get("WEB_PORT", "9090"))
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11435")
 MODEL = os.environ.get("VISION_MODEL", "codex-dental:latest")
-LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "gemini").strip().lower()
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
-GEMINI_FALLBACK_MODELS = [
-    model.strip()
-    for model in os.environ.get("GEMINI_FALLBACK_MODELS", "gemini-2.0-flash,gemini-1.5-flash").split(",")
-    if model.strip()
-]
+AI_SETTINGS = get_settings()
+LLM_PROVIDER = AI_SETTINGS.provider
+GEMINI_MODEL = AI_SETTINGS.model
+DEVELOPMENT_MODE = AI_SETTINGS.development
+HISTORY_LOCK = RLock()
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_DIR = PROJECT_ROOT / "runtime"
 UPLOAD_DIR = RUNTIME_DIR / "uploads"
@@ -237,9 +233,11 @@ HTML = """<!doctype html>
     }
     .metric {
       display: grid;
+      align-content: start;
       gap: 3px;
       min-width: 0;
     }
+    [hidden] { display: none !important; }
     .metric span {
       font-size: 12px;
       color: #64748b;
@@ -863,9 +861,23 @@ HTML = """<!doctype html>
     .verdict.nao { color: var(--green); }
     .verdict.indeterminado { color: var(--orange-2); }
     .forensics {
-      grid-template-columns: repeat(5, minmax(0, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       border-color: #303b4a;
       background: #151c27;
+    }
+    .metric-evidence {
+      grid-column: 1 / -1;
+      border-top: 1px solid #303b4a;
+      padding-top: 10px;
+    }
+    .metric-evidence strong {
+      font-weight: 400;
+      line-height: 1.5;
+    }
+    #report {
+      margin-top: 14px;
+      font-family: inherit;
+      line-height: 1.6;
     }
     .metric span {
       color: #8c9bb2;
@@ -1167,19 +1179,15 @@ HTML = """<!doctype html>
           <input id="originalImage" name="original_image" type="file" accept="image/png,image/jpeg,image/webp,image/bmp">
           <span class="hint">Use quando tiver a foto original para comparar contra a suspeita.</span>
         </div>
-        <label class="toggle" for="useLlm">
-          <input id="useLlm" name="use_llm" type="checkbox">
-          Usar LLM detalhada via Gemini
-        </label>
         <div class="preview-grid">
           <img id="preview" class="preview" alt="Previa da imagem suspeita">
           <img id="originalPreview" class="preview" alt="Previa da imagem original">
         </div>
         <div class="actions">
           <button id="submit" type="submit">Analisar imagem</button>
-          <button id="markReal" class="feedback-button real" type="button">Real</button>
-          <button id="markModified" class="feedback-button modified" type="button">Modificada</button>
-          <button id="markAi" class="feedback-button ai" type="button">IA</button>
+          <button id="markReal" class="feedback-button real" type="button" data-development-only hidden>Real</button>
+          <button id="markModified" class="feedback-button modified" type="button" data-development-only hidden>Modificada</button>
+          <button id="markAi" class="feedback-button ai" type="button" data-development-only hidden>IA</button>
         </div>
         <div id="thinking" class="thinking" aria-live="polite">
           <div class="thinking-head">
@@ -1204,7 +1212,7 @@ HTML = """<!doctype html>
           <div class="metric"><span>Fonte</span><strong id="forensicSource">-</strong></div>
           <div class="metric"><span>Qualidade da imagem</span><strong id="forensicQuality">-</strong></div>
           <div class="metric"><span>Auditoria CRAG</span><strong id="forensicAudit">-</strong></div>
-          <div class="metric"><span>Evidencias locais</span><strong id="forensicEvidence">-</strong></div>
+          <div class="metric metric-evidence"><span>Evidencias locais</span><strong id="forensicEvidence">-</strong></div>
         </div>
         <pre id="report"></pre>
       </div>
@@ -1251,10 +1259,13 @@ HTML = """<!doctype html>
               </label>
               <p>Quando desligado, a tela mostra uma versao menor. O historico continua armazenando o texto completo.</p>
             </div>
-            <div class="settings-panel wide">
+            <div class="settings-panel wide" data-development-only hidden>
               <span>Agente detalhado</span>
               <select id="agentSelect"></select>
-              <p>Usado quando o checkbox de LLM detalhada estiver marcado na analise.</p>
+              <label class="toggle" for="useLlm">
+                <input id="useLlm" name="use_llm" type="checkbox" checked>
+                Usar IA (desmarcar para teste local)
+              </label>
             </div>
             <div class="settings-panel wide">
               <span>Agentes detectados</span>
@@ -1384,7 +1395,7 @@ HTML = """<!doctype html>
 
         if (elapsedSeconds < 2) {
           next = Math.max(progressValue, 8);
-          label = 'Preparando imagem otimizada...';
+          label = 'Preparando imagem e evidencias...';
         } else if (ratio < 0.72) {
           label = `Pericia local, LLM e auditoria CRAG (${Math.round(elapsedSeconds)}s de ~${Math.round(estimatedSeconds)}s)...`;
         } else if (ratio < 0.96) {
@@ -1414,7 +1425,7 @@ HTML = """<!doctype html>
 
     function verdictClass(value) {
       const normalized = String(value || '').toLowerCase();
-      if (normalized.includes('ia') || normalized.includes('alterada') || normalized.includes('modificado')) return 'sim';
+      if (normalized.includes('ia') || normalized.includes('alterada') || normalized.includes('modificado') || normalized.includes('edicao')) return 'sim';
       if (normalized.includes('real')) return 'nao';
       if (normalized.includes('sim')) return 'sim';
       if (normalized.includes('nao') || normalized.includes('não')) return 'nao';
@@ -1464,14 +1475,28 @@ HTML = """<!doctype html>
         ? payload.forensic_evidence.filter(Boolean).join('; ')
         : String(payload.forensic_evidence || '');
       const source = evidenceText || firstReportValue(payload.report, 'EVIDENCIAS');
-      const parts = source
+      const conciseSource = source
+        .replace(/qualidade limitada; conclusao exige cautela:\\s*/i, '')
+        .replace(/qualidade insuficiente para pericia visual confiavel:\\s*/i, '');
+      const parts = conciseSource
         .split(';')
         .map((part) => part.trim())
         .filter(Boolean)
-        .map((part) => part.replace(/proximo de exemplo calibrado:\\s*[a-f0-9-]+\\.(png|jpg|jpeg|webp|bmp)/i, 'proximo de exemplo calibrado'))
+        .filter((part) => !/proximo de exemplo calibrado:/i.test(part))
+        .filter((part) => !(/resolucao.*megapixel/i.test(part) && /menor lado abaixo de/i.test(source)))
+        .map((part) => part
+          .replace(/resolucao (limitada|baixa): menor lado abaixo de (\\d+) px/i, 'resolucao $1 (<$2 px)')
+          .replace(/nitidez inconsistente entre regioes, com contraste fino.*$/i, 'nitidez inconsistente entre regioes')
+          .replace(/ruido local inconsistente, indicando.*$/i, 'ruido varia entre areas, com possivel processamento desigual')
+          .replace(/mapa de nitidez e ruido aponta transicoes regionais pouco uniformes/i, 'transicoes irregulares de nitidez e ruido')
+          .replace(/, com cor artificial destoando do padrao odontologico da imagem/i, '')
+          .replace(/, sugerindo anotacao manual ou edicao grafica aplicada sobre a imagem/i, ' (possivel anotacao ou edicao)')
+          .replace(/imagem apresenta alto nivel de detalhe e ruido, exigindo cautela para diferenciar textura real de artefato/i, 'detalhe e ruido elevados dificultam distinguir textura de artefatos'))
         .filter((part, index, list) => list.findIndex((item) => item.toLowerCase() === part.toLowerCase()) === index)
-        .slice(0, 4);
-      return truncateText(parts.join('; ') || source || '-', 320);
+        .sort((a, b) => Number(/^(resolucao|qualidade)/i.test(a)) - Number(/^(resolucao|qualidade)/i.test(b)))
+        .slice(0, 3);
+      const summary = parts.map((part) => truncateText(part, 100)).join('; ');
+      return truncateText(summary || source || '-', 220);
     }
 
     function fullEvidenceText(payload) {
@@ -1484,33 +1509,39 @@ HTML = """<!doctype html>
       return showFullEvidence ? (fullEvidenceText(payload) || '-') : evidenceSummary(payload);
     }
 
-    function compactReportText(payload) {
+    function compactReportText(payload, includeEvidence = true) {
       const reportText = String(payload.report || '');
       const confidence = firstReportValue(reportText, 'CONFIANCA');
       const justification = firstReportValue(reportText, 'JUSTIFICATIVA');
-      const type = firstReportValue(reportText, 'TIPO');
-      const score = firstReportValue(reportText, 'SCORE_ALTERACAO');
-      const lines = [`VEREDITO: ${payload.verdict || firstReportValue(reportText, 'VEREDITO') || 'INDETERMINADO'}`];
+      const lines = [];
 
-      if (confidence) lines.push(`CONFIANCA: ${confidence}`);
-      if (type) lines.push(`TIPO: ${type}`);
-      if (score) lines.push(`SCORE_ALTERACAO: ${score}`);
-      if (justification) lines.push(`JUSTIFICATIVA: ${truncateText(justification, 320)}`);
-      lines.push(`EVIDENCIAS: ${evidenceSummary(payload)}`);
+      if (justification) lines.push(`Justificativa: ${justification}`);
+      if (confidence) lines.push(`Confianca: ${confidence}`);
+      if (includeEvidence) lines.push(`Evidencias: ${evidenceSummary(payload)}`);
       return lines.join('\\n');
     }
 
-    function visibleReportText(payload) {
-      return showFullEvidence ? (payload.report || compactReportText(payload)) : compactReportText(payload);
+    function visibleReportText(payload, includeEvidence = true) {
+      if (payload.schema_version === '2.0') {
+        if (showFullEvidence) return JSON.stringify(payload, null, 2);
+        if (payload.status === 'nao_concluida') return payload.error || payload.report || 'Analise nao concluida.';
+        const analysis = payload.structured_result || {};
+        const lines = [analysis.justificativa || payload.report || ''];
+        if (includeEvidence) lines.push(`Evidencias: ${evidenceSummary(payload)}`);
+        if (analysis.limitacoes && analysis.limitacoes.length) lines.push(`Limitacoes: ${analysis.limitacoes.slice(0, 2).join(' ')}`);
+        return lines.join('\\n');
+      }
+      return showFullEvidence ? (payload.report || compactReportText(payload)) : compactReportText(payload, includeEvidence);
     }
 
     function renderResultPayload(payload) {
       lastResultPayload = payload;
-      verdict.textContent = `Veredito: ${payload.verdict}`;
+      verdict.textContent = payload.status === 'nao_concluida' ? 'Analise nao concluida' : payload.status === 'experimental' ? `Teste local: ${payload.verdict}` : `Veredito: ${payload.verdict}`;
       verdict.className = `verdict ${verdictClass(payload.verdict)}`;
-      report.textContent = visibleReportText(payload);
+      report.textContent = visibleReportText(payload, false);
       report.dataset.fullReport = payload.report || '';
-      forensicScore.textContent = payload.forensic_score !== undefined ? `${payload.forensic_score}%` : '-';
+      forensicScore.parentElement.hidden = payload.schema_version === '2.0';
+      forensicScore.textContent = payload.forensic_score != null ? `${payload.forensic_score}%` : '-';
       forensicSource.textContent = payload.source || '-';
       forensicQuality.textContent = qualityText(payload);
       forensicAudit.textContent = auditText(payload);
@@ -1522,7 +1553,7 @@ HTML = """<!doctype html>
 
     function isModifiedHistory(item) {
       const verdict = String(item.verdict || '').toUpperCase();
-      return verdict.includes('MODIFICADO') || verdict.includes('ALTERADA') || verdict.includes('IA');
+      return verdict.includes('MODIFICADO') || verdict.includes('ALTERADA') || verdict.includes('IA') || verdict.includes('EDICAO');
     }
 
     function isCalibrationHistory(item) {
@@ -1580,6 +1611,12 @@ HTML = """<!doctype html>
     }
 
     function renderAgents(payload) {
+      document.querySelectorAll('[data-development-only]').forEach((element) => { element.hidden = !payload.development_mode; });
+      if (!payload.development_mode) {
+        useLlmInput.checked = true;
+        useLlmInput.disabled = true;
+        selectedAgent = 'gemini';
+      }
       const agents = payload.agents || [];
       const availableAgents = agents.filter((agent) => agent.available && agent.mode === 'llm');
       const selected = selectedAgent || payload.default_provider || 'gemini';
@@ -1608,7 +1645,7 @@ HTML = """<!doctype html>
       const html = agents.map((agent) => `
         <div class="agent-item">
           <div><strong>${agent.name}</strong><br><small>${agent.detail || ''}</small></div>
-          <span class="agent-badge ${agent.available ? '' : 'off'}">${agent.available ? 'disponivel' : 'indisponivel'}</span>
+          <span class="agent-badge ${agent.available ? '' : 'off'}">${agent.state || (agent.available ? 'disponivel' : 'indisponivel')}</span>
         </div>
       `).join('');
       agentList.innerHTML = html || '<div class="agent-item">Nenhum agente detectado.</div>';
@@ -1660,7 +1697,7 @@ HTML = """<!doctype html>
 
         const itemVerdict = document.createElement('div');
         itemVerdict.className = `history-verdict ${verdictClass(item.verdict)}`;
-        itemVerdict.textContent = `Veredito: ${item.verdict || 'INDETERMINADO'}`;
+        itemVerdict.textContent = item.status === 'nao_concluida' ? 'Analise nao concluida' : item.status === 'experimental' ? `Teste local: ${item.verdict}` : `Veredito: ${item.verdict || 'INDETERMINADO'}`;
 
         const itemReport = document.createElement('div');
         itemReport.className = 'history-report';
@@ -1751,6 +1788,15 @@ HTML = """<!doctype html>
         const response = await fetch(`/history?${params.toString()}`);
         if (!response.ok) return;
         const payload = await response.json();
+        if (showFullEvidence && payload.history) {
+          payload.history = await Promise.all(payload.history.map(async (item) => {
+            if (!item.analysis_id) return item;
+            try {
+              const detail = await fetch(`/analysis/${encodeURIComponent(item.analysis_id)}`);
+              return detail.ok ? { ...item, ...await detail.json() } : item;
+            } catch (_) { return item; }
+          }));
+        }
         renderHistory(payload);
       } catch (_error) {
         historyList.innerHTML = '<div class="history-empty">Nao foi possivel carregar o historico.</div>';
@@ -1860,11 +1906,11 @@ HTML = """<!doctype html>
       try {
         const response = await fetch('/analyze', { method: 'POST', body: data });
         const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || 'Falha na analise.');
+        if (!response.ok && payload.status !== 'nao_concluida') throw new Error(payload.error || 'Falha na analise.');
 
         renderResultPayload(payload);
-        finishThinking('Resposta pronta.');
-        statusBox.textContent = payload.duration_seconds
+        finishThinking(payload.status === 'nao_concluida' ? 'Analise nao concluida.' : 'Resposta pronta.');
+        statusBox.textContent = payload.status === 'nao_concluida' ? 'Evidencias preservadas. A analise pode ser tentada novamente.' : payload.duration_seconds
           ? `Analise concluida em ${payload.duration_seconds}s.`
           : 'Analise concluida.';
         historyPage = 1;
@@ -2417,20 +2463,17 @@ def merge_audit_and_forensics(
 
 
 def normalize_history_item(item: dict[str, Any]) -> dict[str, Any]:
+    if item.get("schema_version") == "2.0":
+        return dict(item)
     cleaned = dict(item)
-    report = str(cleaned.get("report") or "").strip()
-    if not report or report.lower().startswith("thought") or "<unused" in report:
-        fallback = cleaned.get("verdict", "INDETERMINADO")
-        report = f"VEREDITO: {fallback}\nSCORE_ALTERACAO: {cleaned.get('forensic_score', 50)}"
-    normalized = normalize_report(clean_model_response(report))
-    cleaned["verdict"] = normalized["verdict"]
-    cleaned["report"] = normalized["report"]
-    if cleaned.get("forensic_score") is None:
-        cleaned["forensic_score"] = infer_score(normalized["report"])
+    report = str(cleaned.get("report") or "")
+    cleaned["report"] = report or "Relatorio legado indisponivel."
+    if not cleaned.get("verdict"):
+        cleaned["verdict"] = get_field(report, "VEREDITO") or None
     if cleaned.get("source") is None:
-        cleaned["source"] = "historico_normalizado"
+        cleaned["source"] = "historico_legado"
     if cleaned.get("forensic_evidence") is None:
-        evidence = get_field(normalized["report"], "EVIDENCIAS")
+        evidence = get_field(report, "EVIDENCIAS")
         cleaned["forensic_evidence"] = [evidence] if evidence else []
     if cleaned.get("forensic_quality") is None:
         metrics = cleaned.get("forensic_metrics")
@@ -2457,7 +2500,7 @@ def load_history() -> list[dict[str, Any]]:
 
 def history_is_modified(item: dict[str, Any]) -> bool:
     verdict = str(item.get("verdict") or "").upper()
-    return any(token in verdict for token in ("MODIFICADO", "ALTERADA", "IA"))
+    return any(token in verdict for token in ("MODIFICADO", "ALTERADA", "IA", "EDICAO"))
 
 
 def history_is_calibration(item: dict[str, Any]) -> bool:
@@ -2473,7 +2516,7 @@ def history_matches_tab(item: dict[str, Any], tab: str) -> bool:
     if tab == "real":
         return verdict == "REAL"
     if tab == "inconclusive":
-        return verdict == "INDETERMINADO"
+        return verdict == "INDETERMINADO" or item.get("status") == "nao_concluida"
     if tab == "calibration":
         return history_is_calibration(item)
     return True
@@ -2668,9 +2711,9 @@ def ollama_is_available() -> bool:
 
 
 def available_agents() -> list[dict[str, Any]]:
-    gemini_ready = genai is not None and bool(GEMINI_API_KEY)
-    ollama_ready = ollama_is_available()
-    return [
+    gemini_ready = bool(AI_SETTINGS.api_key)
+    ollama_ready = ollama_is_available() if DEVELOPMENT_MODE else False
+    agents = [
         {
             "provider": "local",
             "name": "Pericia local rapida",
@@ -2682,7 +2725,8 @@ def available_agents() -> list[dict[str, Any]]:
             "provider": "gemini",
             "name": f"Gemini detalhado ({GEMINI_MODEL})",
             "available": gemini_ready,
-            "detail": "Disponivel quando GEMINI_API_KEY esta configurada.",
+            "detail": "Chave configurada; disponibilidade do modelo confirmada apenas ao executar a analise.",
+            "state": "configurado" if gemini_ready else "sem chave",
             "mode": "llm",
         },
         {
@@ -2693,6 +2737,7 @@ def available_agents() -> list[dict[str, Any]]:
             "mode": "llm",
         },
     ]
+    return agents if DEVELOPMENT_MODE else [agent for agent in agents if agent["provider"] == "gemini"]
 
 
 def save_history(history: list[dict[str, Any]]) -> None:
@@ -2703,9 +2748,10 @@ def save_history(history: list[dict[str, Any]]) -> None:
 
 
 def append_history(entry: dict[str, Any]) -> None:
-    history = load_history()
-    history.insert(0, entry)
-    save_history(history)
+    with HISTORY_LOCK:
+        history = load_history()
+        history.insert(0, entry)
+        save_history(history)
 
 
 def calibration_entry_for_label(label: str) -> dict[str, Any]:
@@ -2786,36 +2832,13 @@ def prepare_analysis_image(image_path: Path) -> Path:
 
 
 def call_gemini_flash(prompt: str, image_path: Path, max_output_tokens: int = 256) -> tuple[str, str]:
-    if genai is None or genai_types is None:
-        raise RuntimeError("Dependencia google-genai ausente. Rode: python -m pip install -r requirements.txt")
-    if Image is None:
-        raise RuntimeError("Dependencia Pillow ausente para abrir a imagem enviada ao Gemini.")
-    if not GEMINI_API_KEY:
-        raise RuntimeError("Defina a variavel de ambiente GEMINI_API_KEY antes de usar a LLM detalhada.")
-
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    candidate_models = [GEMINI_MODEL] + [
-        model for model in GEMINI_FALLBACK_MODELS if model != GEMINI_MODEL
-    ]
-    last_error: Exception | None = None
-    with Image.open(image_path) as image:
-        image = ImageOps.exif_transpose(image).convert("RGB") if ImageOps is not None else image.convert("RGB")
-        for model_name in candidate_models:
-            try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=[prompt, image],
-                    config=genai_types.GenerateContentConfig(
-                        temperature=0.1,
-                        max_output_tokens=max_output_tokens,
-                    ),
-                )
-                return str(getattr(response, "text", "") or "").strip(), model_name
-            except Exception as exc:
-                last_error = exc
-                if "NOT_FOUND" not in str(exc) and "404" not in str(exc):
-                    break
-    raise RuntimeError(f"Falha ao chamar Gemini: {last_error}")
+    if not DEVELOPMENT_MODE:
+        raise RuntimeError("Chamadas livres ao Gemini sao exclusivas do modo de desenvolvimento.")
+    generated = GeminiClient(AI_SETTINGS).generate(
+        prompt, "Ferramenta experimental de integridade visual. Nao emita diagnostico.",
+        image_path, max_output_tokens=max_output_tokens,
+    )
+    return generated.text, generated.requested_model
 
 
 def call_ollama_llm(prompt: str, image_path: Path) -> str:
@@ -2991,6 +3014,12 @@ def analyze_image(
     use_llm: bool = False,
     agent_provider: str | None = None,
 ) -> dict[str, Any]:
+    provider = agent_provider or LLM_PROVIDER
+    if not DEVELOPMENT_MODE or (use_llm and provider in {"gemini", "google", "gemini_flash"}):
+        if provider not in {"gemini", "google", "gemini_flash"}:
+            raise RuntimeError("Troca de provedor permitida apenas em desenvolvimento.")
+        return run_integrity_pipeline(image_path, original_path, settings=AI_SETTINGS,
+                                      cache_dir=ANALYSIS_DIR, calibration=load_calibration())
     total_started = time.perf_counter()
     forensic = analyze_forensics(
         image_path,
@@ -2998,9 +3027,10 @@ def analyze_image(
         calibration=load_calibration(),
         calibration_samples=load_calibration_samples(),
     )
-    if forensic.skip_llm or (FAST_LOCAL_MODE and not use_llm):
+    if not use_llm or forensic.skip_llm:
         local_result = report_from_forensics(forensic)
         return {
+            "status": "experimental",
             "verdict": local_result["verdict"],
             "report": local_result["report"],
             "duration_seconds": f"{time.perf_counter() - total_started:.2f}",
@@ -3019,6 +3049,7 @@ def analyze_image(
     audit_result = run_clinical_audit(forensic, report, response_text, analysis_path, provider=agent_provider)
     normalized = merge_audit_and_forensics(report, audit_result, forensic)
     return {
+        "status": "experimental",
         "verdict": normalized["verdict"],
         "report": normalized["report"],
         "duration_seconds": f"{time.perf_counter() - total_started:.2f}",
@@ -3119,8 +3150,21 @@ class PeritoHandler(BaseHTTPRequestHandler):
                 {
                     "default_provider": "gemini" if preferred in {"google", "gemini_flash"} else preferred,
                     "agents": agents,
+                    "development_mode": DEVELOPMENT_MODE,
                 },
             )
+            return
+
+        if request_path.startswith("/analysis/"):
+            analysis_id = request_path.removeprefix("/analysis/")
+            if not re.fullmatch(r"[a-f0-9]{32}", analysis_id):
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            saved_result = ANALYSIS_DIR / analysis_id / "result.json"
+            if not saved_result.is_file():
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            json_response(self, HTTPStatus.OK, json.loads(saved_result.read_text(encoding="utf-8")))
             return
 
         if request_path.startswith("/uploads/"):
@@ -3160,6 +3204,10 @@ class PeritoHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if self.path not in {"/analyze", "/calibrate"}:
             self.send_error(HTTPStatus.NOT_FOUND, "Endpoint nao encontrado")
+            return
+
+        if self.path == "/calibrate" and not DEVELOPMENT_MODE:
+            json_response(self, HTTPStatus.FORBIDDEN, {"error": "Calibracao permitida apenas em desenvolvimento."})
             return
 
         content_type = self.headers.get("Content-Type", "")
@@ -3205,6 +3253,7 @@ class PeritoHandler(BaseHTTPRequestHandler):
                 return
 
             result = calibrated_feedback_result(label)
+            result["status"] = "experimental"
             calibration = load_calibration()
             calibration_entry = dict(result["calibration_entry"])
             forensic_metrics = local_metrics(image_path)
@@ -3276,6 +3325,7 @@ class PeritoHandler(BaseHTTPRequestHandler):
                 "original_stored_filename": original_path.name if original_path is not None else None,
                 "original_image_url": f"/uploads/{original_path.name}" if original_path is not None else None,
                 "model": "calibracao_local",
+                "status": "experimental",
                 "verdict": result["verdict"],
                 "report": result["report"],
                 "duration_seconds": result["duration_seconds"],
@@ -3292,6 +3342,9 @@ class PeritoHandler(BaseHTTPRequestHandler):
 
         use_llm = "use_llm" in form and str(getattr(form["use_llm"], "value", "")).lower() in {"1", "true", "sim", "on"}
         agent_provider = str(getattr(form.get("agent_provider"), "value", "") or "").strip().lower() or None
+        if not DEVELOPMENT_MODE and agent_provider not in {None, "gemini"}:
+            json_response(self, HTTPStatus.FORBIDDEN, {"error": "Producao exige o provedor Gemini."})
+            return
 
         try:
             result = analyze_image(image_path, original_path, use_llm=use_llm, agent_provider=agent_provider)
@@ -3329,8 +3382,12 @@ class PeritoHandler(BaseHTTPRequestHandler):
             "audit_status": result.get("audit_status"),
             "audit_evidence": result.get("audit_evidence", []),
         }
+        for key in ("schema_version", "analysis_id", "evidence_id", "status", "confidence", "structured_result", "error", "error_code", "limitations", "audit"):
+            if key in result:
+                entry[key] = result[key]
         append_history(entry)
-        json_response(self, HTTPStatus.OK, {**result, "history_item": entry})
+        response_status = HTTPStatus.SERVICE_UNAVAILABLE if result.get("status") == "nao_concluida" else HTTPStatus.OK
+        json_response(self, response_status, {**result, "history_item": entry})
 
     def log_message(self, format: str, *args: object) -> None:
         print(f"{self.address_string()} - {format % args}")

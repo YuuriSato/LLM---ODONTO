@@ -131,7 +131,7 @@ def build_workflow():
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Analisa raios-X odontologicos usando Ollama + MedGemma 1.5.",
+        description="EXPERIMENTAL: fluxo legado Ollama, fora da classificacao de integridade em producao.",
     )
     parser.add_argument(
         "image_path",

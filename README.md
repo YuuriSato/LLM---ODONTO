@@ -1,18 +1,14 @@
 # Perito Visual Local
 
-Projeto local para analisar imagens odontologicas/intraorais e classificar a integridade visual:
+Analise de integridade de imagens odontologicas, sem diagnostico clinico.
 
-- `REAL`
-- `ALTERADA_MANUALMENTE`
-- `ALTERADA_DIGITALMENTE`
-- `IA_GERADA_EDITADA`
-- `INDETERMINADO`
+Fluxo de producao: imagem original -> pericia local -> local_evidence.json ->
+Gemini 2.5 Flash -> auditoria no backend -> veredito final.
 
-O sistema usa pericia local rapida e, quando o checkbox de LLM detalhada esta
-marcado, usa Gemini por padrao. Ollama local com `codex-dental:latest` continua
-disponivel como alternativa.
-Antes da LLM, a aplicacao roda uma pericia local com hash, dHash perceptual,
-ELA simples, nitidez, ruido e comparacao opcional com a imagem original.
+Vereditos: REAL, IA_GERADA, IA_EDITADA, EDICAO_TRADICIONAL ou INDETERMINADO.
+O Codex e ferramenta de desenvolvimento; nao e o classificador de producao.
+Ollama, calibracao e testes exclusivamente locais ficam restritos ao modo de
+desenvolvimento. O historico legado conserva seus rotulos originais.
 
 ## Estrutura
 
@@ -51,13 +47,22 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Confira o arquivo `.env`. Para um teste rapido sem LLM detalhada, ele pode ficar
-como esta. Para usar o checkbox de LLM detalhada via Gemini, preencha:
+Use .env.example como referencia e preencha .env, que e ignorado pelo Git:
 
 ```env
+APP_ENV=production
+AI_PROVIDER=gemini
+GEMINI_MODEL=gemini-2.5-flash
 GEMINI_API_KEY=sua-chave-do-gemini
-LLM_PROVIDER=gemini
+AI_TIMEOUT_SECONDS=90
+AI_MAX_OUTPUT_TOKENS=8192
 ```
+
+AI_PROVIDER tem precedencia sobre LLM_PROVIDER (compatibilidade legada).
+Producao exige o modelo exato: nao ha fallback automatico, nem uso dos antigos
+GEMINI_FALLBACK_MODELS. Se houver 404, a analise fica nao_concluida, com as
+evidencias preservadas. Listar modelos ou validar a chave nao confirma que a
+conta consegue executar esse modelo.
 
 Suba o web service:
 
@@ -82,82 +87,96 @@ WEB_PORT=8080
 http://localhost:8080
 ```
 
-Na tela, envie a imagem suspeita. Se tiver a foto original, envie tambem no
-campo opcional "Imagem original opcional"; isso melhora bastante a deteccao de
-edicoes localizadas por IA.
+Na tela, envie a imagem a analisar e, se disponivel, uma imagem de referencia.
+O pipeline completo roda sempre em producao, independentemente do score ou
+da existencia de uma calibracao anterior.
 
-O checkbox "Usar LLM detalhada via Gemini" envia a imagem otimizada e as
-evidencias locais para o Gemini. Sem o checkbox, a resposta usa apenas a
-pericia local rapida. Para usar Ollama local no checkbox, altere no `.env`:
+## Arquitetura de integridade
 
-```env
-LLM_PROVIDER=ollama
-```
+- app/ai/config.py: configuracao centralizada e restricoes de producao.
+- app/ai/evidence.py: ELA, FFT, ruido global e por blocos, nitidez, compressao,
+  metadados tecnicos, qualidade, sobreposicoes e comparacao opcional.
+- app/ai/gemini_client.py: unico acesso ao SDK, imagens originais, schema,
+  timeout e limpeza dos arquivos remotos temporarios.
+- app/ai/gemini_integrity_analyzer.py e schemas.py: interpretacao multimodal,
+  validacao Pydantic estrita e referencias as medicoes locais.
+- app/ai/audit.py e pipeline.py: auditoria obrigatoria, revisao condicional e
+  persistencia separada das hipoteses inicial, revisada e conclusao final.
+- app/ai/detector.py: contrato de detector externo, desativado por padrao.
 
-Arquivos persistidos pela UI:
+JPEG, PNG e WebP sao enviados sem recompressao nem reducao de resolucao. BMP e
+convertido para PNG sem perdas, com conversao registrada. Arquivos grandes usam
+a API de arquivos do Gemini e sao removidos ao final; falhas de limpeza ficam
+registradas. A modalidade TOMOGRAFIA refere-se a imagem 2D enviada; DICOM e
+volumes 3D nao sao suportados nesta versao.
+
+FFT usa remocao da media, janela Hann e 16 faixas radiais. Ruido usa residuo
+gaussiano e coordenadas na imagem de analise reduzida. Metricas novas sao
+descritivas, sem limiares de fraude inventados. Ausencia, falha, metodo nao
+aplicavel e detector desativado sao estados distintos, nunca scores iguais a zero.
+
+O schema obriga a separar evidencias visuais e computacionais, citar as medicoes
+originais e declarar limitacoes. O backend verifica tipos, enums, confianca
+finita, referencias e valores. Permite uma tentativa de correcao de resposta
+invalida, sem regex de recuperacao nem preenchimento silencioso.
+
+A auditoria exige suporte visual e medicoes coerentes de pelo menos duas
+familias locais distintas para uma conclusao definitiva. ELA e compressao contam
+como uma familia; ruido e nitidez como outra. Frequencia e metadados sao apenas
+descritivos. Esses criterios sao conservadores e heuristicos, nao validacao
+cientifica de um detector de IA.
+
+Conflitos, qualidade insuficiente ou evidencias fracas provocam revisao
+multimodal, no maximo uma vez. Se persistirem, o resultado e INDETERMINADO e a
+confianca final fica nula; a confianca inicial do modelo permanece registrada.
+Nenhuma confianca e apresentada como probabilidade calibrada. Falha de API,
+schema ou revisao gera nao_concluida, sem inventar um veredito.
+
+## Evidencias e API
 
 ```text
 runtime/uploads/
-runtime/analysis_cache/
+runtime/analysis_cache/<analysis_id>/local_evidence.json
+runtime/analysis_cache/<analysis_id>/result.json
 runtime/analysis_history.json
 runtime/integrity_calibration.json
 ```
 
-O historico salva a imagem suspeita, a original opcional, o score local,
-as evidencias locais e a fonte do veredito. Na interface web, ele e carregado
-em abas com paginacao, para nao transferir/renderizar todos os registros de uma
-vez.
+Cada tentativa tem identificador proprio. O arquivo de evidencias e salvo antes
+de chamar a IA e o resultado preserva todas as evidencias e respostas recebidas.
+A tela mostra um resumo; Settings permite consultar os dados completos.
+O historico lista os ultimos 100 registros; os artefatos completos permanecem
+nas pastas individuais, inclusive apos uma entrada sair dessa lista.
 
-## Arquitetura Integridade Primeiro
+POST /analyze conserva o formulario multipart com image e original_image
+opcional. Retorna schema_version, analysis_id, status, verdict, structured_result
+e audit, alem dos campos legados de apresentacao. status=nao_concluida retorna
+HTTP 503, verdict=null e error_code. INDETERMINADO e uma analise concluida,
+nao uma falha de transporte.
 
-O sistema atua como barreira de seguranca visual antes de qualquer leitura
-clinica. Ele nao emite diagnostico odontologico; primeiro verifica se a imagem
-parece integra, modificada ou insuficiente para uma pericia confiavel.
+GET /analysis/<analysis_id> recupera o resultado completo. GET /agents informa
+a configuracao, sem confundir presenca de chave com disponibilidade comprovada.
+A aplicacao continua local e sem autenticacao; nao a exponha publicamente sem
+controle de acesso aos uploads, historico e artefatos.
 
-Fluxo de decisao:
+## Desenvolvimento e testes
 
-1. Calibracao local: hash SHA256 e dHash perceptual reconhecem exemplos ja
-   ensinados como `REAL`, `MODIFICADO` ou `IA_GERADA_EDITADA`.
-2. Qualidade da imagem: largura, altura, megapixels, menor lado, nitidez global
-   e blur classificam a imagem como `boa`, `limitada` ou `insuficiente`.
-3. Pericia local: ELA, ruido, nitidez regional, marcadores coloridos e
-   comparacao opcional com original geram o score tecnico.
-4. Invalidacao por integridade: linhas verdes, setas, textos, borroes, recortes
-   ou diferencas fortes contra a original invalidam a imagem como `MODIFICADO`
-   ou `IA_GERADA_EDITADA`, sem depender da LLM.
-5. Desempate por Gemini: quando o score local fica intermediario e o checkbox
-   esta marcado, o Gemini recebe as evidencias locais para procurar texturas
-   nao biologicas, dentes/raizes fundidos e densidade radiografica incoerente.
-6. Auditoria CRAG: quando a LLM detalhada roda, uma segunda chamada interna
-   pode revisar o laudo inicial contra ELA, ruido, nitidez, qualidade, MOQAM e
-   comparacao com original. Se houver conflito entre achado visual aparente e
-   evidencia forense local, o resultado `REAL` e bloqueado.
+Com APP_ENV=development, Settings libera teste local e selecao experimental
+de provedor. /calibrate retorna 403 em producao, e requisicoes de outro provedor
+tambem sao bloqueadas pelo backend. A interface marca resultados experimentais.
 
-MOQAM / Escaneamento por Receptividade:
+```powershell
+.\\.venv\\Scripts\\python.exe -m unittest discover -s tests -p "test_*.py" -v
+```
 
-- Micro-escala: a LLM revisa pequenas regioes de pixel/textura/borda, incluindo
-  areas de desmineralizacao aparente, carie/lesao apenas como achado visual e
-  transicoes que possam indicar reconstrucao por IA.
-- Macro-escala: a LLM revisa continuidade biologica de mandibula, arcada,
-  proteses, implantes, raizes e separacao entre dentes.
-- Conflito de escala: se a macro-escala parecer coerente, mas a micro-escala
-  mostrar alteracao localizada forte, a imagem nao deve ser classificada como
-  `REAL`. Implantes e metais nao devem mascarar pequenas edicoes vizinhas.
-
-Se a qualidade for insuficiente e nao houver fraude visual forte, o resultado
-sera `INDETERMINADO` com `TIPO: QUALIDADE_INSUFICIENTE`. Baixa resolucao nao
-prova alteracao; ela limita a confiabilidade da pericia.
-
-Auditoria CRAG / Self-Reflective RAG:
-
-- O laudo inicial do Gemini e tratado como hipotese, nao como conclusao final.
-- A auditoria reavalia achados aparentes como carie/lesao, dentes fundidos,
-  densidade incoerente ou textura suspeita contra as metricas locais.
-- Se a auditoria indicar que um achado clinico aparente pode ser artefato de
-  pixel/ruido/ELA, o sistema retorna `INDETERMINADO` ou `MODIFICADO` conforme o
-  score local. O sistema continua sem emitir diagnostico odontologico.
+Antes de considerar a operacao pronta, teste uma geracao multimodal real com
+JSON Schema e exatamente gemini-2.5-flash. Na verificacao desta implementacao,
+o modelo retornou 404 NOT_FOUND: producao permanece sem classificacao disponivel
+nessa conta ate resolver o acesso ao modelo. Nenhuma alternativa foi utilizada.
 
 ## Ollama
+
+Ferramenta experimental, fora do pipeline de producao.
 
 Baixar modelo base:
 
@@ -175,9 +194,39 @@ ollama create codex-dental -f .\models\Modelfile-Codex-Dental
 
 ## CLI
 
+Fluxo legado experimental, fora da classificacao de integridade de producao.
+
 ```powershell
 .\.venv\Scripts\python.exe .\app\perito_flow.py .\tests\test_dental.png --json
 ```
+
+## Parecer tecnico (Modo Plan)
+
+O script `scripts/codex_plan_mode.py` transforma evidencias locais em um parecer
+experimental via Ollama, fora do pipeline de producao,
+em portugues, com paragrafos curtos e sem diagnostico odontologico. Ele recebe
+somente JSON: nao analisa a imagem novamente. Esta funcao e executada pelo
+terminal e nao adiciona uma pagina na interface web.
+
+Com o Ollama em execucao e o modelo instalado, confira `OLLAMA_HOST` e
+`VISION_MODEL` no `.env`. Sao aceitos hosts com ou sem `http://`.
+
+Use um arquivo JSON existente com um objeto de evidencias (qualidade, score,
+ELA, ruido, nitidez ou comparacao com original). O caminho abaixo e um exemplo;
+substitua pelo arquivo que deseja usar, pois ele nao e criado pelo comando:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\codex_plan_mode.py --input-json .\runtime\analysis_cache\local_evidence.json --output-txt .\reports\codex_parecer.txt --output-json .\reports\codex_parecer.json
+```
+
+As pastas de saida sao criadas automaticamente. `--output-json` e opcional e
+`--model nome-do-modelo` substitui o modelo configurado. O TXT preserva o parecer
+completo, incluindo a linha final `VEREDITO_PLAN`. O JSON contem `parecer_texto`
+e `resumo_extraido` (veredito, confianca de 0 a 1 e recomendacao).
+
+Se o modelo retornar um resumo invalido, o texto e preservado para revisao,
+`resumo_extraido` fica `null` e o comando termina com codigo 1 e um aviso.
+O parecer gerado requer revisao humana; sua confianca e declarada pelo modelo.
 
 ## Comparacao de Raios-X por Paciente
 
