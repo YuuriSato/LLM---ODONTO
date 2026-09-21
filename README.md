@@ -3,7 +3,7 @@
 Analise de integridade de imagens odontologicas, sem diagnostico clinico.
 
 Fluxo de producao: imagem original -> pericia local -> local_evidence.json ->
-Gemini 2.5 Flash -> auditoria no backend -> veredito final.
+Gemini Flash Latest -> auditoria no backend -> veredito final.
 
 Vereditos: REAL, IA_GERADA, IA_EDITADA, EDICAO_TRADICIONAL ou INDETERMINADO.
 O Codex e ferramenta de desenvolvimento; nao e o classificador de producao.
@@ -52,7 +52,7 @@ Use .env.example como referencia e preencha .env, que e ignorado pelo Git:
 ```env
 APP_ENV=production
 AI_PROVIDER=gemini
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODEL=gemini-flash-latest
 GEMINI_API_KEY=sua-chave-do-gemini
 AI_TIMEOUT_SECONDS=90
 AI_MAX_OUTPUT_TOKENS=8192
@@ -170,9 +170,9 @@ tambem sao bloqueadas pelo backend. A interface marca resultados experimentais.
 ```
 
 Antes de considerar a operacao pronta, teste uma geracao multimodal real com
-JSON Schema e exatamente gemini-2.5-flash. Na verificacao desta implementacao,
-o modelo retornou 404 NOT_FOUND: producao permanece sem classificacao disponivel
-nessa conta ate resolver o acesso ao modelo. Nenhuma alternativa foi utilizada.
+JSON Schema usando gemini-flash-latest. Esse alias e o modelo de producao;
+a versao retornada pelo provedor e registrada em cada chamada para rastreabilidade.
+Nao ha troca automatica para outro modelo se a chamada falhar.
 
 ## Ollama
 

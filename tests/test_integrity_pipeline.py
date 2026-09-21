@@ -254,7 +254,8 @@ class IntegrityTests(unittest.TestCase):
         with patch("app.ai.config.load_project_env"), patch.dict("os.environ", {"LLM_PROVIDER": "ollama"}, clear=True):
             self.assertEqual(get_settings().provider, "ollama")
         with self.assertRaises(ValueError):
-            AISettings(api_key="test", model="gemini-flash-latest").validate_production()
+            AISettings(api_key="test", model="gemini-2.5-flash").validate_production()
+        AISettings(api_key="test", model="gemini-flash-latest").validate_production()
 
 
 if __name__ == "__main__":

@@ -66,7 +66,7 @@ class WebIntegrityTests(unittest.TestCase):
 
     def test_false_llm_flag_does_not_bypass_production_pipeline(self):
         result = {"schema_version": "2.0", "analysis_id": "a" * 32, "status": "nao_concluida",
-                  "verdict": None, "model": "gemini-2.5-flash", "report": "Indisponivel", "error": "Modelo indisponivel", "error_code": "model_unavailable"}
+                  "verdict": None, "model": "gemini-flash-latest", "report": "Indisponivel", "error": "Modelo indisponivel", "error_code": "model_unavailable"}
         with patch.object(web, "run_integrity_pipeline", return_value=result) as pipeline, patch.object(web, "analyze_forensics") as legacy:
             status, body = self.upload({"use_llm": "0"})
         self.assertEqual(status, 503)

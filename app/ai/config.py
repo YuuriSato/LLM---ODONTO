@@ -3,7 +3,7 @@ import os
 
 from app.env_loader import load_project_env
 
-PRIMARY_MODEL = "gemini-2.5-flash"
+PRIMARY_MODEL = "gemini-flash-latest"
 SCHEMA_VERSION = "2.0"
 PROMPT_VERSION = "integrity-2.0"
 
