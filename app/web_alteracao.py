@@ -7,7 +7,7 @@ import re
 import sys
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from email.parser import BytesParser
 from io import BytesIO
@@ -22,8 +22,14 @@ from urllib.request import urlopen
 import ollama
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app.ai.config import get_settings
+from app.ai.config import SUPPORTED_MODELS, get_settings
 from app.ai.gemini_client import GeminiClient
+from app.ai import lmstudio_client
+from app.history_store import HistoryStore
+from app.uploads import MAX_REQUEST_BYTES, save_image
+from app.jobs import JobQueue, QueueFull
+from app.evaluation import held_out_hashes
+from app.file_lock import file_lock, ResourceBusy
 from app.ai.pipeline import run_integrity_pipeline
 
 try:
@@ -71,6 +77,8 @@ LLM_PROVIDER = AI_SETTINGS.provider
 GEMINI_MODEL = AI_SETTINGS.model
 DEVELOPMENT_MODE = AI_SETTINGS.development
 HISTORY_LOCK = RLock()
+JOB_QUEUE = None
+JOB_LOCK = RLock()
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_DIR = PROJECT_ROOT / "runtime"
 UPLOAD_DIR = RUNTIME_DIR / "uploads"
@@ -93,1846 +101,8 @@ KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "30m")
 DEFAULT_ESTIMATED_SECONDS = float(os.environ.get("DEFAULT_ESTIMATED_SECONDS", "8"))
 FAST_LOCAL_MODE = os.environ.get("FAST_LOCAL_MODE", "1").lower() not in {"0", "false", "nao", "não"}
 
-HTML = """<!doctype html>
-<html lang="pt-BR">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Perito Visual</title>
-  <style>
-    :root {
-      color-scheme: light;
-      font-family: Arial, Helvetica, sans-serif;
-      background: #f4f6f8;
-      color: #18202a;
-    }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      display: grid;
-      place-items: center;
-      padding: 24px;
-    }
-    main {
-      width: min(960px, 100%);
-      background: #fff;
-      border: 1px solid #d9e0e7;
-      border-radius: 8px;
-      box-shadow: 0 12px 34px rgba(24, 32, 42, 0.08);
-      overflow: hidden;
-    }
-    header {
-      padding: 24px;
-      border-bottom: 1px solid #e4e9ee;
-      background: #fbfcfd;
-    }
-    h1 {
-      margin: 0 0 6px;
-      font-size: 24px;
-      letter-spacing: 0;
-    }
-    p {
-      margin: 0;
-      color: #52606d;
-      line-height: 1.45;
-    }
-    section {
-      padding: 24px;
-      display: grid;
-      gap: 18px;
-    }
-    .upload {
-      border: 1px dashed #9aa8b5;
-      border-radius: 8px;
-      padding: 22px;
-      background: #f8fafc;
-      display: grid;
-      gap: 14px;
-    }
-    input[type="file"] {
-      width: 100%;
-      font-size: 15px;
-    }
-    .field {
-      display: grid;
-      gap: 7px;
-    }
-    .toggle {
-      display: flex;
-      align-items: center;
-      gap: 9px;
-      color: #334155;
-      font-size: 14px;
-    }
-    .toggle input {
-      width: 18px;
-      height: 18px;
-    }
-    .field label {
-      font-weight: 800;
-      color: #26313d;
-    }
-    .hint {
-      font-size: 13px;
-      color: #64748b;
-    }
-    .preview-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 12px;
-    }
-    button {
-      width: fit-content;
-      border: 0;
-      border-radius: 6px;
-      padding: 11px 16px;
-      background: #1264a3;
-      color: #fff;
-      font-weight: 700;
-      cursor: pointer;
-    }
-    .actions {
-      display: flex;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 10px;
-    }
-    .feedback-button {
-      background: #475569;
-    }
-    .feedback-button.modified {
-      background: #b42318;
-    }
-    .feedback-button.ai {
-      background: #7c3aed;
-    }
-    .feedback-button.real {
-      background: #067647;
-    }
-    button:disabled {
-      cursor: wait;
-      opacity: 0.65;
-    }
-    .preview {
-      display: none;
-      max-width: 100%;
-      max-height: 360px;
-      border-radius: 6px;
-      border: 1px solid #d9e0e7;
-      object-fit: contain;
-      background: #101820;
-    }
-    .forensics {
-      display: none;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
-      gap: 10px;
-      border: 1px solid #d9e0e7;
-      border-radius: 8px;
-      padding: 12px;
-      background: #fbfcfd;
-    }
-    .metric {
-      display: grid;
-      align-content: start;
-      gap: 3px;
-      min-width: 0;
-    }
-    [hidden] { display: none !important; }
-    .metric span {
-      font-size: 12px;
-      color: #64748b;
-    }
-    .metric strong {
-      color: #26313d;
-      word-break: break-word;
-    }
-    .result {
-      display: none;
-      border: 1px solid #d9e0e7;
-      border-radius: 8px;
-      padding: 18px;
-      background: #ffffff;
-    }
-    .verdict {
-      font-size: 22px;
-      font-weight: 800;
-      margin-bottom: 12px;
-    }
-    .verdict.sim { color: #b42318; }
-    .verdict.nao { color: #067647; }
-    .verdict.indeterminado { color: #b54708; }
-    pre {
-      white-space: pre-wrap;
-      word-break: break-word;
-      margin: 0;
-      font-family: Consolas, Monaco, monospace;
-      font-size: 14px;
-      line-height: 1.45;
-      color: #26313d;
-    }
-    .status {
-      min-height: 22px;
-      color: #52606d;
-    }
-    .thinking {
-      display: none;
-      border: 1px solid #d9e0e7;
-      border-radius: 8px;
-      padding: 14px;
-      background: #ffffff;
-      gap: 10px;
-    }
-    .thinking.active {
-      display: grid;
-    }
-    .thinking-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 16px;
-      font-size: 14px;
-      color: #334155;
-    }
-    .percent {
-      font-weight: 800;
-      color: #1264a3;
-      min-width: 44px;
-      text-align: right;
-    }
-    .bar {
-      height: 10px;
-      background: #e8eef4;
-      border-radius: 999px;
-      overflow: hidden;
-    }
-    .bar-fill {
-      width: 0%;
-      height: 100%;
-      background: #1264a3;
-      border-radius: inherit;
-      transition: width 360ms ease;
-    }
-    .steps {
-      display: grid;
-      gap: 6px;
-      margin-top: 2px;
-      color: #64748b;
-      font-size: 13px;
-    }
-    .step.done {
-      color: #067647;
-      font-weight: 700;
-    }
-    .step.active {
-      color: #1264a3;
-      font-weight: 700;
-    }
-    .history {
-      border-top: 1px solid #e4e9ee;
-      background: #fbfcfd;
-    }
-    .history-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      margin-bottom: 12px;
-    }
-    .history-head h2 {
-      margin: 0;
-      font-size: 18px;
-      letter-spacing: 0;
-    }
-    .history-tabs {
-      display: flex;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-bottom: 12px;
-    }
-    .history-tab {
-      display: inline-flex;
-      align-items: center;
-      gap: 7px;
-      border: 1px solid #cbd5e1;
-      border-radius: 6px;
-      padding: 8px 10px;
-      background: #fff;
-      color: #334155;
-      font-weight: 700;
-      cursor: pointer;
-    }
-    .history-tab.active {
-      border-color: #1264a3;
-      background: #e8f2fb;
-      color: #0f4f82;
-    }
-    .history-tab-count {
-      min-width: 22px;
-      border-radius: 999px;
-      padding: 2px 7px;
-      background: #e2e8f0;
-      color: #334155;
-      font-size: 12px;
-      text-align: center;
-    }
-    .history-tab.active .history-tab-count {
-      background: #1264a3;
-      color: #fff;
-    }
-    .history-pager {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      border: 1px solid #d9e0e7;
-      border-radius: 8px;
-      padding: 12px 14px;
-      margin-bottom: 12px;
-      background: #fff;
-    }
-    .history-range,
-    .history-page-label {
-      color: #52606d;
-      font-size: 14px;
-    }
-    .history-page-actions {
-      display: inline-flex;
-      align-items: center;
-      gap: 10px;
-    }
-    .history-page-button {
-      width: 38px;
-      height: 38px;
-      display: inline-grid;
-      place-items: center;
-      border: 1px solid #cbd5e1;
-      border-radius: 8px;
-      padding: 0;
-      background: #fff;
-      color: #1264a3;
-      font-size: 22px;
-      line-height: 1;
-    }
-    .history-page-button:disabled {
-      cursor: not-allowed;
-      color: #94a3b8;
-      background: #f8fafc;
-      opacity: 1;
-    }
-    .history-list {
-      display: grid;
-      gap: 12px;
-    }
-    .history-empty {
-      color: #64748b;
-      border: 1px dashed #cbd5e1;
-      border-radius: 8px;
-      padding: 14px;
-      background: #fff;
-    }
-    .history-item {
-      display: grid;
-      grid-template-columns: 132px 1fr;
-      gap: 14px;
-      border: 1px solid #d9e0e7;
-      border-radius: 8px;
-      padding: 12px;
-      background: #fff;
-    }
-    .history-images {
-      display: grid;
-      gap: 8px;
-    }
-    .history-item img {
-      width: 132px;
-      height: 92px;
-      object-fit: cover;
-      border-radius: 6px;
-      border: 1px solid #d9e0e7;
-      background: #101820;
-    }
-    .history-item img.original-thumb {
-      height: 64px;
-      opacity: 0.86;
-    }
-    .history-meta {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px 14px;
-      color: #64748b;
-      font-size: 13px;
-      margin-bottom: 8px;
-    }
-    .history-verdict {
-      font-weight: 800;
-      margin-bottom: 6px;
-    }
-    .history-verdict.sim { color: #b42318; }
-    .history-verdict.nao { color: #067647; }
-    .history-verdict.indeterminado { color: #b54708; }
-    .history-report {
-      white-space: pre-wrap;
-      word-break: break-word;
-      color: #26313d;
-      font-size: 13px;
-      line-height: 1.4;
-    }
-    @media (max-width: 620px) {
-      .history-item {
-        grid-template-columns: 1fr;
-      }
-      .history-item img {
-        width: 100%;
-        height: auto;
-        max-height: 260px;
-        object-fit: contain;
-      }
-      .preview-grid,
-      .forensics {
-        grid-template-columns: 1fr;
-      }
-      .history-tabs {
-        align-items: stretch;
-      }
-      .history-tab {
-        flex: 1 1 calc(50% - 8px);
-        justify-content: center;
-      }
-      .history-pager {
-        align-items: stretch;
-        flex-direction: column;
-      }
-      .history-page-actions {
-        justify-content: space-between;
-      }
-    }
-    :root {
-      color-scheme: dark;
-      font-family: Inter, "Segoe UI", Arial, Helvetica, sans-serif;
-      background: #070a10;
-      color: #eef4ff;
-      --bg: #070a10;
-      --panel: #111821;
-      --panel-2: #151c27;
-      --line: #2a3442;
-      --muted: #8190a8;
-      --soft: #c4cedd;
-      --text: #f7f9fc;
-      --orange: #ff7a00;
-      --orange-2: #f59f32;
-      --green: #12d18e;
-      --red: #f87171;
-    }
-    * {
-      box-sizing: border-box;
-    }
-    body {
-      min-height: 100vh;
-      display: block;
-      padding: 0;
-      background:
-        radial-gradient(circle at 78% 8%, rgba(255, 122, 0, 0.08), transparent 28%),
-        linear-gradient(180deg, #0c111b 0%, #070a10 100%);
-      color: var(--text);
-    }
-    .app-shell {
-      min-height: 100vh;
-      display: grid;
-      grid-template-columns: 278px minmax(0, 1fr);
-      background: rgba(7, 10, 16, 0.96);
-    }
-    .sidebar {
-      position: sticky;
-      top: 0;
-      height: 100vh;
-      display: flex;
-      flex-direction: column;
-      gap: 28px;
-      padding: 18px 16px;
-      border-right: 1px solid #202938;
-      background: #0a0f17;
-    }
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      padding: 0 2px 18px;
-      border-bottom: 1px solid #202938;
-    }
-    .brand-mark {
-      width: 36px;
-      height: 36px;
-      border: 6px solid var(--orange);
-      border-right-color: transparent;
-      border-radius: 50%;
-    }
-    .brand-title {
-      display: grid;
-      gap: 2px;
-      font-weight: 800;
-      letter-spacing: 1px;
-    }
-    .brand-title small {
-      color: #ffffff;
-      font-size: 10px;
-      letter-spacing: 3px;
-    }
-    .nav {
-      display: grid;
-      gap: 6px;
-      color: #91a0b7;
-      font-weight: 700;
-      font-size: 14px;
-    }
-    .nav-item {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      min-height: 42px;
-      padding: 0 14px;
-      border-radius: 8px;
-    }
-    .nav-item.active {
-      color: #fff;
-      border: 1px solid rgba(255, 122, 0, 0.56);
-      background: rgba(255, 122, 0, 0.14);
-    }
-    .workspace {
-      min-width: 0;
-      display: grid;
-      grid-template-rows: auto 1fr;
-    }
-    .topbar {
-      min-height: 64px;
-      display: grid;
-      grid-template-columns: 1fr minmax(260px, 448px) auto;
-      align-items: center;
-      gap: 16px;
-      padding: 12px 30px;
-      border-bottom: 1px solid #202938;
-      background: rgba(13, 18, 27, 0.82);
-      backdrop-filter: blur(10px);
-    }
-    .workspace-title {
-      display: grid;
-      gap: 2px;
-    }
-    .workspace-title span {
-      color: #75849c;
-      font-size: 11px;
-      font-weight: 800;
-      letter-spacing: 4px;
-    }
-    .workspace-title strong {
-      font-size: 18px;
-    }
-    .search-box {
-      height: 38px;
-      display: flex;
-      align-items: center;
-      border: 1px solid #2a3442;
-      border-radius: 8px;
-      padding: 0 14px;
-      color: #74839a;
-      background: #151b25;
-    }
-    .top-actions {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-    .icon-button,
-    .user-chip {
-      height: 38px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      border: 1px solid #2a3442;
-      border-radius: 8px;
-      background: #151b25;
-      color: #dbe5f2;
-    }
-    .icon-button {
-      width: 40px;
-      font-size: 18px;
-    }
-    .user-chip {
-      gap: 9px;
-      padding: 0 12px;
-      font-weight: 800;
-      white-space: nowrap;
-    }
-    .user-avatar {
-      width: 26px;
-      height: 26px;
-      display: inline-grid;
-      place-items: center;
-      border-radius: 7px;
-      background: rgba(255, 122, 0, 0.18);
-      color: var(--orange-2);
-    }
-    main {
-      width: min(1500px, calc(100% - 64px));
-      margin: 28px auto 40px;
-      display: grid;
-      gap: 20px;
-      background: transparent;
-      border: 0;
-      border-radius: 0;
-      box-shadow: none;
-      overflow: visible;
-    }
-    header {
-      display: flex;
-      align-items: end;
-      justify-content: space-between;
-      gap: 20px;
-      padding: 0 0 6px;
-      border: 0;
-      background: transparent;
-    }
-    h1 {
-      margin: 0;
-      color: #fff;
-      font-size: clamp(28px, 4vw, 42px);
-      line-height: 1;
-      letter-spacing: 0;
-    }
-    p {
-      color: var(--muted);
-    }
-    .hero-copy {
-      max-width: 760px;
-      display: grid;
-      gap: 10px;
-    }
-    .status-pill {
-      display: inline-flex;
-      align-items: center;
-      width: fit-content;
-      min-height: 28px;
-      border: 1px solid rgba(255, 122, 0, 0.48);
-      border-radius: 6px;
-      padding: 0 10px;
-      color: var(--orange-2);
-      background: rgba(255, 122, 0, 0.1);
-      font-size: 12px;
-      font-weight: 900;
-      letter-spacing: 3px;
-    }
-    section {
-      padding: 0;
-      display: grid;
-      gap: 18px;
-    }
-    .upload,
-    .result,
-    .history {
-      border: 1px solid #273241;
-      border-radius: 8px;
-      background: #111821;
-      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.26);
-    }
-    .upload {
-      padding: 20px;
-      display: grid;
-      gap: 16px;
-      border-style: solid;
-    }
-    .field {
-      gap: 8px;
-    }
-    .field label,
-    .toggle {
-      color: #dce6f4;
-      font-size: 14px;
-      font-weight: 800;
-    }
-    .hint {
-      color: #718096;
-      font-size: 13px;
-    }
-    input[type="file"] {
-      min-height: 44px;
-      border: 1px solid #303b4a;
-      border-radius: 8px;
-      padding: 9px;
-      background: #171e29;
-      color: #d9e3f0;
-    }
-    input[type="file"]::file-selector-button {
-      min-height: 30px;
-      margin-right: 12px;
-      border: 1px solid rgba(255, 122, 0, 0.5);
-      border-radius: 7px;
-      padding: 0 12px;
-      background: rgba(255, 122, 0, 0.12);
-      color: #ffad4f;
-      font-weight: 800;
-      cursor: pointer;
-    }
-    .toggle {
-      width: fit-content;
-      min-height: 42px;
-      border: 1px solid #303b4a;
-      border-radius: 8px;
-      padding: 0 12px;
-      background: #171e29;
-    }
-    .toggle input {
-      accent-color: var(--orange);
-    }
-    .preview {
-      max-height: 340px;
-      border: 1px solid #303b4a;
-      border-radius: 8px;
-      background: #080c12;
-    }
-    .actions {
-      display: grid;
-      grid-template-columns: minmax(180px, 1fr) repeat(3, auto);
-      align-items: center;
-      gap: 10px;
-    }
-    button {
-      min-height: 44px;
-      border-radius: 8px;
-      border: 1px solid transparent;
-      padding: 0 16px;
-      background: var(--orange);
-      color: #071017;
-      font-weight: 900;
-    }
-    #submit {
-      width: 100%;
-      background: linear-gradient(180deg, #ff8a18 0%, #ff7900 100%);
-    }
-    .feedback-button {
-      background: #18202b;
-      border-color: #303b4a;
-      color: #dce6f4;
-    }
-    .feedback-button.modified {
-      background: rgba(248, 113, 113, 0.12);
-      border-color: rgba(248, 113, 113, 0.45);
-      color: #ffb4b4;
-    }
-    .feedback-button.ai {
-      background: rgba(255, 122, 0, 0.12);
-      border-color: rgba(255, 122, 0, 0.46);
-      color: #ffb15c;
-    }
-    .feedback-button.real {
-      background: rgba(18, 209, 142, 0.12);
-      border-color: rgba(18, 209, 142, 0.42);
-      color: #7df0c2;
-    }
-    .thinking {
-      border-color: #303b4a;
-      background: #151c27;
-    }
-    .thinking-head {
-      color: #dce6f4;
-    }
-    .percent,
-    .step.active {
-      color: var(--orange-2);
-    }
-    .bar {
-      background: #242e3c;
-    }
-    .bar-fill {
-      background: linear-gradient(90deg, var(--orange), #ffb057);
-    }
-    .step.done {
-      color: var(--green);
-    }
-    .status {
-      color: #95a4bb;
-    }
-    .result {
-      padding: 18px;
-    }
-    .verdict {
-      color: #fff;
-    }
-    .verdict.sim { color: var(--red); }
-    .verdict.nao { color: var(--green); }
-    .verdict.indeterminado { color: var(--orange-2); }
-    .forensics {
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      border-color: #303b4a;
-      background: #151c27;
-    }
-    .metric-evidence {
-      grid-column: 1 / -1;
-      border-top: 1px solid #303b4a;
-      padding-top: 10px;
-    }
-    .metric-evidence strong {
-      font-weight: 400;
-      line-height: 1.5;
-    }
-    #report {
-      margin-top: 14px;
-      font-family: inherit;
-      line-height: 1.6;
-    }
-    .metric span {
-      color: #8c9bb2;
-    }
-    .metric strong,
-    pre {
-      color: #e8eef8;
-    }
-    .history {
-      padding: 18px;
-      border-top: 1px solid #273241;
-    }
-    .history-head h2 {
-      color: #fff;
-    }
-    .history-tabs {
-      gap: 8px;
-    }
-    .history-tab,
-    .history-pager,
-    .history-empty,
-    .history-item {
-      border-color: #303b4a;
-      background: #151c27;
-      color: #c9d3e1;
-    }
-    .history-tab.active {
-      border-color: rgba(255, 122, 0, 0.66);
-      background: rgba(255, 122, 0, 0.13);
-      color: #ffb25d;
-    }
-    .history-tab-count,
-    .history-tab.active .history-tab-count {
-      background: #222c3a;
-      color: #dce6f4;
-    }
-    .history-range,
-    .history-page-label,
-    .history-meta,
-    .history-empty {
-      color: #8d9bb0;
-    }
-    .history-page-button {
-      border-color: #303b4a;
-      background: #111821;
-      color: var(--orange-2);
-    }
-    .history-page-button:disabled {
-      background: #151c27;
-      color: #546176;
-    }
-    .history-item img {
-      border-color: #303b4a;
-      background: #080c12;
-    }
-    .history-report {
-      color: #cbd5e1;
-    }
-    .nav-item {
-      border: 0;
-      width: 100%;
-      justify-content: flex-start;
-      background: transparent;
-      color: #91a0b7;
-      cursor: pointer;
-    }
-    .page {
-      display: none;
-      gap: 18px;
-    }
-    .page.active {
-      display: grid;
-    }
-    .analysis-layout {
-      display: grid;
-      gap: 18px;
-    }
-    .dashboard-grid,
-    .settings-grid {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 14px;
-    }
-    .dashboard-card,
-    .settings-panel {
-      border: 1px solid #273241;
-      border-radius: 8px;
-      padding: 18px;
-      background: #111821;
-    }
-    .dashboard-card span,
-    .settings-panel span {
-      display: block;
-      color: #8190a8;
-      font-size: 12px;
-      font-weight: 800;
-      letter-spacing: 1px;
-      text-transform: uppercase;
-    }
-    .dashboard-card strong {
-      display: block;
-      margin-top: 10px;
-      color: #fff;
-      font-size: 30px;
-      line-height: 1;
-    }
-    .dashboard-card p,
-    .settings-panel p {
-      margin-top: 8px;
-      color: #8d9bb0;
-      font-size: 13px;
-    }
-    .settings-panel {
-      display: grid;
-      gap: 12px;
-    }
-    .settings-panel.wide {
-      grid-column: span 2;
-    }
-    .settings-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 14px;
-      min-height: 42px;
-    }
-    .settings-row input[type="checkbox"] {
-      width: 18px;
-      height: 18px;
-      accent-color: var(--orange);
-    }
-    select {
-      width: 100%;
-      min-height: 42px;
-      border: 1px solid #303b4a;
-      border-radius: 8px;
-      padding: 0 12px;
-      background: #171e29;
-      color: #d9e3f0;
-      font-weight: 700;
-    }
-    .agent-list {
-      display: grid;
-      gap: 8px;
-    }
-    .agent-item {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      border: 1px solid #303b4a;
-      border-radius: 8px;
-      padding: 10px 12px;
-      background: #151c27;
-      color: #dce6f4;
-      font-size: 13px;
-    }
-    .agent-item small {
-      color: #8d9bb0;
-    }
-    .agent-badge {
-      border-radius: 6px;
-      padding: 4px 8px;
-      background: rgba(18, 209, 142, 0.12);
-      color: #7df0c2;
-      font-weight: 800;
-    }
-    .agent-badge.off {
-      background: rgba(248, 113, 113, 0.12);
-      color: #ffb4b4;
-    }
-    @media (max-width: 980px) {
-      .app-shell {
-        grid-template-columns: 1fr;
-      }
-      .sidebar {
-        position: static;
-        height: auto;
-        padding: 14px 18px;
-      }
-      .nav {
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-      }
-      .nav-item {
-        justify-content: center;
-      }
-      .topbar {
-        grid-template-columns: 1fr;
-      }
-      .search-box,
-      .top-actions {
-        display: none;
-      }
-      main {
-        width: min(100% - 28px, 900px);
-        margin-top: 20px;
-      }
-    }
-    @media (max-width: 720px) {
-      header {
-        align-items: start;
-        flex-direction: column;
-      }
-      .nav {
-        grid-template-columns: 1fr 1fr;
-      }
-      .actions {
-        grid-template-columns: 1fr;
-      }
-      .dashboard-grid,
-      .settings-grid {
-        grid-template-columns: 1fr;
-      }
-      .settings-panel.wide {
-        grid-column: auto;
-      }
-      .feedback-button {
-        width: 100%;
-      }
-      .forensics {
-        grid-template-columns: 1fr;
-      }
-    }
-
-@media (min-width: 1024px) {
- .dashboard-grid, .settings-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-}
-</style>
-</head>
-<body>
-  <div class="app-shell">
-    <aside class="sidebar" aria-label="Navegacao principal">
-      <div class="brand">
-        <div class="brand-mark" aria-hidden="true"></div>
-        <div class="brand-title">
-          <strong>OKTA7</strong>
-          <small>TECHNOLOGIES</small>
-        </div>
-      </div>
-      <nav class="nav">
-        <button class="nav-item" type="button" data-page="dashboard">Dashboard</button>
-        <button class="nav-item active" type="button" data-page="analyze">Perito Visual</button>
-        <button class="nav-item" type="button" data-page="history">Historico</button>
-        <button class="nav-item" type="button" data-page="settings">Settings</button>
-      </nav>
-    </aside>
-    <div class="workspace">
-      <div class="topbar">
-        <div class="workspace-title">
-          <span>WORKSPACE</span>
-          <strong>TesteCli</strong>
-        </div>
-        <div class="search-box">Buscar analises, imagens, evidencias...</div>
-        <div class="top-actions" aria-label="Acoes da conta">
-          <div class="icon-button" title="Tema">o</div>
-          <div class="icon-button" title="Notificacoes">!</div>
-          <div class="user-chip"><span class="user-avatar">Y</span> Yuri Sato</div>
-        </div>
-      </div>
-      <main>
-        <section class="page" data-page-panel="dashboard">
-          <header>
-            <div class="hero-copy">
-              <span class="status-pill">DASHBOARD</span>
-              <h1>Resumo operacional</h1>
-              <p>Visao rapida das analises salvas, classificacoes e agentes disponiveis para teste.</p>
-            </div>
-          </header>
-          <div class="dashboard-grid">
-            <div class="dashboard-card"><span>Total de analises</span><strong id="dashTotal">0</strong><p>Registros armazenados localmente.</p></div>
-            <div class="dashboard-card"><span>Modificados / IA</span><strong id="dashModified">0</strong><p>Casos com sinal de alteracao.</p></div>
-            <div class="dashboard-card"><span>Reais</span><strong id="dashReal">0</strong><p>Imagens classificadas como integras.</p></div>
-            <div class="dashboard-card"><span>Inconclusivos</span><strong id="dashInconclusive">0</strong><p>Casos limitados por qualidade ou evidencia.</p></div>
-          </div>
-          <div class="settings-panel">
-            <span>Agentes ativos</span>
-            <div class="agent-list" id="dashboardAgents">
-              <div class="agent-item">Carregando agentes...</div>
-            </div>
-          </div>
-        </section>
-        <section class="page active" data-page-panel="analyze">
-        <header>
-          <div class="hero-copy">
-            <span class="status-pill">PERICIA LOCAL</span>
-            <h1>Perito Visual</h1>
-            <p>Envie uma foto, print ou imagem para verificar sinais de edicao manual, alteracao digital ou geracao/edicao por IA.</p>
-          </div>
-        </header>
-    <div class="analysis-layout">
-      <form class="upload" id="form">
-        <div class="field">
-          <label for="image">Imagem suspeita</label>
-          <input id="image" name="image" type="file" accept="image/png,image/jpeg,image/webp,image/bmp" required>
-          <span class="hint">Foto, print, raio-X ou imagem odontologica que sera analisada.</span>
-        </div>
-        <div class="field">
-          <label for="originalImage">Imagem original opcional</label>
-          <input id="originalImage" name="original_image" type="file" accept="image/png,image/jpeg,image/webp,image/bmp">
-          <span class="hint">Use quando tiver a foto original para comparar contra a suspeita.</span>
-        </div>
-        <div class="preview-grid">
-          <img id="preview" class="preview" alt="Previa da imagem suspeita">
-          <img id="originalPreview" class="preview" alt="Previa da imagem original">
-        </div>
-        <div class="actions">
-          <button id="submit" type="submit">Analisar imagem</button>
-          <button id="markReal" class="feedback-button real" type="button" data-development-only hidden>Real</button>
-          <button id="markModified" class="feedback-button modified" type="button" data-development-only hidden>Modificada</button>
-          <button id="markAi" class="feedback-button ai" type="button" data-development-only hidden>IA</button>
-        </div>
-        <div id="thinking" class="thinking" aria-live="polite">
-          <div class="thinking-head">
-            <span id="phase">Aguardando envio</span>
-            <span id="percent" class="percent">0%</span>
-          </div>
-          <div class="bar" aria-hidden="true">
-            <div id="barFill" class="bar-fill"></div>
-          </div>
-          <div class="steps">
-            <div id="stepUpload" class="step">1. Enviando imagem</div>
-            <div id="stepVision" class="step">2. Pericia local e LLM analisando evidencias</div>
-            <div id="stepReport" class="step">3. Preparando veredito</div>
-          </div>
-        </div>
-        <div id="status" class="status"></div>
-      </form>
-      <div id="result" class="result">
-        <div id="verdict" class="verdict"></div>
-        <div id="forensics" class="forensics">
-          <div class="metric"><span>Score local</span><strong id="forensicScore">-</strong></div>
-          <div class="metric"><span>Fonte</span><strong id="forensicSource">-</strong></div>
-          <div class="metric"><span>Qualidade da imagem</span><strong id="forensicQuality">-</strong></div>
-          <div class="metric"><span>Auditoria CRAG</span><strong id="forensicAudit">-</strong></div>
-          <div class="metric metric-evidence"><span>Evidencias locais</span><strong id="forensicEvidence">-</strong></div>
-        </div>
-        <pre id="report"></pre>
-      </div>
-    </div>
-        </section>
-    <section class="page history" data-page-panel="history">
-      <div class="history-head">
-        <h2>Historico de analises</h2>
-        <p id="historyCount">0 registros</p>
-      </div>
-      <div class="history-tabs" id="historyTabs" role="tablist" aria-label="Filtros do historico">
-        <button class="history-tab active" type="button" data-tab="all">Todos <span class="history-tab-count">0</span></button>
-        <button class="history-tab" type="button" data-tab="modified">Modificados/IA <span class="history-tab-count">0</span></button>
-        <button class="history-tab" type="button" data-tab="real">Reais <span class="history-tab-count">0</span></button>
-        <button class="history-tab" type="button" data-tab="inconclusive">Inconclusivos <span class="history-tab-count">0</span></button>
-        <button class="history-tab" type="button" data-tab="calibration">Calibracao <span class="history-tab-count">0</span></button>
-      </div>
-      <div class="history-pager" aria-label="Paginacao do historico">
-        <div class="history-range" id="historyRange">0 registros</div>
-        <div class="history-page-actions">
-          <button class="history-page-button" id="historyPrev" type="button" aria-label="Pagina anterior">‹</button>
-          <span class="history-page-label" id="historyPageLabel">Pagina 1 / 1</span>
-          <button class="history-page-button" id="historyNext" type="button" aria-label="Proxima pagina">›</button>
-        </div>
-      </div>
-      <div id="historyList" class="history-list">
-        <div class="history-empty">Nenhuma analise armazenada ainda.</div>
-      </div>
-    </section>
-        <section class="page" data-page-panel="settings">
-          <header>
-            <div class="hero-copy">
-              <span class="status-pill">DEV SETTINGS</span>
-              <h1>Settings</h1>
-              <p>Opcoes locais para testar a interface, alternar agentes e controlar a quantidade de texto exibida.</p>
-            </div>
-          </header>
-          <div class="settings-grid">
-            <div class="settings-panel wide">
-              <span>Evidencias</span>
-              <label class="settings-row" for="showFullEvidence">
-                <strong>Exibir todo texto de evidencias</strong>
-                <input id="showFullEvidence" type="checkbox">
-              </label>
-              <p>Quando desligado, a tela mostra uma versao menor. O historico continua armazenando o texto completo.</p>
-            </div>
-            <div class="settings-panel wide" data-development-only hidden>
-              <span>Agente detalhado</span>
-              <select id="agentSelect"></select>
-              <label class="toggle" for="useLlm">
-                <input id="useLlm" name="use_llm" type="checkbox" checked>
-                Usar IA (desmarcar para teste local)
-              </label>
-            </div>
-            <div class="settings-panel wide">
-              <span>Agentes detectados</span>
-              <div class="agent-list" id="agentList">
-                <div class="agent-item">Carregando agentes...</div>
-              </div>
-            </div>
-          </div>
-        </section>
-      </main>
-    </div>
-  </div>
-  <script>
-    const form = document.getElementById('form');
-    const input = document.getElementById('image');
-    const originalInput = document.getElementById('originalImage');
-    const useLlmInput = document.getElementById('useLlm');
-    const preview = document.getElementById('preview');
-    const originalPreview = document.getElementById('originalPreview');
-    const submit = document.getElementById('submit');
-    const markReal = document.getElementById('markReal');
-    const markModified = document.getElementById('markModified');
-    const markAi = document.getElementById('markAi');
-    const statusBox = document.getElementById('status');
-    const thinking = document.getElementById('thinking');
-    const phase = document.getElementById('phase');
-    const percent = document.getElementById('percent');
-    const barFill = document.getElementById('barFill');
-    const steps = [
-      document.getElementById('stepUpload'),
-      document.getElementById('stepVision'),
-      document.getElementById('stepReport')
-    ];
-    const result = document.getElementById('result');
-    const verdict = document.getElementById('verdict');
-    const report = document.getElementById('report');
-    const forensics = document.getElementById('forensics');
-    const forensicScore = document.getElementById('forensicScore');
-    const forensicSource = document.getElementById('forensicSource');
-    const forensicQuality = document.getElementById('forensicQuality');
-    const forensicAudit = document.getElementById('forensicAudit');
-    const forensicEvidence = document.getElementById('forensicEvidence');
-    const historyTabs = document.getElementById('historyTabs');
-    const historyList = document.getElementById('historyList');
-    const historyCount = document.getElementById('historyCount');
-    const historyRange = document.getElementById('historyRange');
-    const historyPageLabel = document.getElementById('historyPageLabel');
-    const historyPrev = document.getElementById('historyPrev');
-    const historyNext = document.getElementById('historyNext');
-    const navItems = Array.from(document.querySelectorAll('[data-page]'));
-    const pages = Array.from(document.querySelectorAll('[data-page-panel]'));
-    const dashTotal = document.getElementById('dashTotal');
-    const dashModified = document.getElementById('dashModified');
-    const dashReal = document.getElementById('dashReal');
-    const dashInconclusive = document.getElementById('dashInconclusive');
-    const dashboardAgents = document.getElementById('dashboardAgents');
-    const showFullEvidenceInput = document.getElementById('showFullEvidence');
-    const agentSelect = document.getElementById('agentSelect');
-    const agentList = document.getElementById('agentList');
-    let progressTimer = null;
-    let progressValue = 0;
-    let estimatedSeconds = 75;
-    let progressStartedAt = 0;
-    let activeHistoryTab = 'all';
-    let historyPage = 1;
-    let lastResultPayload = null;
-    let showFullEvidence = localStorage.getItem('perito.showFullEvidence') === '1';
-    let selectedAgent = localStorage.getItem('perito.selectedAgent') || '';
-    let historyMeta = {
-      page: 1,
-      total_pages: 1,
-      total: 0,
-      total_all: 0,
-      page_size: 8,
-      start: 0,
-      end: 0,
-      counts: {}
-    };
-
-    showFullEvidenceInput.checked = showFullEvidence;
-
-    function setActivePage(pageName) {
-      navItems.forEach((item) => {
-        item.classList.toggle('active', item.dataset.page === pageName);
-      });
-      pages.forEach((page) => {
-        page.classList.toggle('active', page.dataset.pagePanel === pageName);
-      });
-      if (pageName === 'history' || pageName === 'dashboard') loadHistory();
-      if (pageName === 'settings' || pageName === 'dashboard') loadAgents();
-    }
-
-    function setProgress(value, label) {
-      progressValue = Math.max(progressValue, Math.min(value, 100));
-      percent.textContent = `${Math.round(progressValue)}%`;
-      barFill.style.width = `${progressValue}%`;
-      phase.textContent = label;
-
-      steps.forEach((step) => {
-        step.classList.remove('active', 'done');
-      });
-      if (progressValue < 25) {
-        steps[0].classList.add('active');
-      } else if (progressValue < 86) {
-        steps[0].classList.add('done');
-        steps[1].classList.add('active');
-      } else if (progressValue < 100) {
-        steps[0].classList.add('done');
-        steps[1].classList.add('done');
-        steps[2].classList.add('active');
-      } else {
-        steps.forEach((step) => step.classList.add('done'));
-      }
-    }
-
-    function startThinking() {
-      thinking.classList.add('active');
-      progressValue = 0;
-      progressStartedAt = performance.now();
-      setProgress(4, 'Enviando imagem para analise...');
-      clearInterval(progressTimer);
-      progressTimer = setInterval(() => {
-        const elapsedSeconds = (performance.now() - progressStartedAt) / 1000;
-        const ratio = Math.min(elapsedSeconds / Math.max(estimatedSeconds, 8), 1);
-        let next = 8 + (ratio * 86);
-        let label = 'Pericia local analisando evidencias visuais...';
-
-        if (elapsedSeconds < 2) {
-          next = Math.max(progressValue, 8);
-          label = 'Preparando imagem e evidencias...';
-        } else if (ratio < 0.72) {
-          label = `Pericia local, LLM e auditoria CRAG (${Math.round(elapsedSeconds)}s de ~${Math.round(estimatedSeconds)}s)...`;
-        } else if (ratio < 0.96) {
-          label = 'Normalizando score, confianca e justificativa...';
-        } else {
-          next = Math.min(97, next);
-          label = 'Finalizando veredito...';
-        }
-
-        setProgress(Math.min(next, 97), label);
-      }, 1000);
-    }
-
-    function finishThinking(label) {
-      clearInterval(progressTimer);
-      progressTimer = null;
-      setProgress(100, label);
-    }
-
-    function resetThinking() {
-      clearInterval(progressTimer);
-      progressTimer = null;
-      progressValue = 0;
-      thinking.classList.remove('active');
-      setProgress(0, 'Aguardando envio');
-    }
-
-    function verdictClass(value) {
-      const normalized = String(value || '').toLowerCase();
-      if (normalized.includes('ia') || normalized.includes('alterada') || normalized.includes('modificado') || normalized.includes('edicao')) return 'sim';
-      if (normalized.includes('real')) return 'nao';
-      if (normalized.includes('sim')) return 'sim';
-      if (normalized.includes('nao') || normalized.includes('não')) return 'nao';
-      return 'indeterminado';
-    }
-
-    function qualityText(payload) {
-      const metrics = payload.forensic_metrics || {};
-      const status = String(payload.forensic_quality || metrics.quality_status || '').trim();
-      if (!status) return '-';
-      const labels = {
-        boa: 'boa',
-        limitada: 'limitada',
-        insuficiente: 'insuficiente'
-      };
-      const label = labels[status.toLowerCase()] || status;
-      if (status.toLowerCase() === 'insuficiente') {
-        return 'insuficiente - resolucao/nitidez insuficiente para pericia confiavel';
-      }
-      return label;
-    }
-
-    function auditText(payload) {
-      const status = String(payload.audit_status || '').trim();
-      if (!status || status === 'nao_executada') return '-';
-      const evidence = Array.isArray(payload.audit_evidence)
-        ? payload.audit_evidence.filter(Boolean).slice(0, 2).join('; ')
-        : '';
-      if (!evidence) return status;
-      return `${status} - ${evidence}`;
-    }
-
-    function firstReportValue(reportText, label) {
-      const regex = new RegExp(`^${label}:\\s*(.+)$`, 'im');
-      const match = String(reportText || '').match(regex);
-      return match ? match[1].trim() : '';
-    }
-
-    function truncateText(text, maxLength) {
-      const clean = String(text || '').replace(/\\s+/g, ' ').trim();
-      if (clean.length <= maxLength) return clean;
-      return `${clean.slice(0, maxLength - 3).trim()}...`;
-    }
-
-    function evidenceSummary(payload) {
-      const evidenceText = Array.isArray(payload.forensic_evidence)
-        ? payload.forensic_evidence.filter(Boolean).join('; ')
-        : String(payload.forensic_evidence || '');
-      const source = evidenceText || firstReportValue(payload.report, 'EVIDENCIAS');
-      const conciseSource = source
-        .replace(/qualidade limitada; conclusao exige cautela:\\s*/i, '')
-        .replace(/qualidade insuficiente para pericia visual confiavel:\\s*/i, '');
-      const parts = conciseSource
-        .split(';')
-        .map((part) => part.trim())
-        .filter(Boolean)
-        .filter((part) => !/proximo de exemplo calibrado:/i.test(part))
-        .filter((part) => !(/resolucao.*megapixel/i.test(part) && /menor lado abaixo de/i.test(source)))
-        .map((part) => part
-          .replace(/resolucao (limitada|baixa): menor lado abaixo de (\\d+) px/i, 'resolucao $1 (<$2 px)')
-          .replace(/nitidez inconsistente entre regioes, com contraste fino.*$/i, 'nitidez inconsistente entre regioes')
-          .replace(/ruido local inconsistente, indicando.*$/i, 'ruido varia entre areas, com possivel processamento desigual')
-          .replace(/mapa de nitidez e ruido aponta transicoes regionais pouco uniformes/i, 'transicoes irregulares de nitidez e ruido')
-          .replace(/, com cor artificial destoando do padrao odontologico da imagem/i, '')
-          .replace(/, sugerindo anotacao manual ou edicao grafica aplicada sobre a imagem/i, ' (possivel anotacao ou edicao)')
-          .replace(/imagem apresenta alto nivel de detalhe e ruido, exigindo cautela para diferenciar textura real de artefato/i, 'detalhe e ruido elevados dificultam distinguir textura de artefatos'))
-        .filter((part, index, list) => list.findIndex((item) => item.toLowerCase() === part.toLowerCase()) === index)
-        .sort((a, b) => Number(/^(resolucao|qualidade)/i.test(a)) - Number(/^(resolucao|qualidade)/i.test(b)))
-        .slice(0, 3);
-      const summary = parts.map((part) => truncateText(part, 100)).join('; ');
-      return truncateText(summary || source || '-', 220);
-    }
-
-    function fullEvidenceText(payload) {
-      return Array.isArray(payload.forensic_evidence)
-        ? payload.forensic_evidence.filter(Boolean).join('; ')
-        : String(payload.forensic_evidence || '');
-    }
-
-    function visibleEvidenceText(payload) {
-      return showFullEvidence ? (fullEvidenceText(payload) || '-') : evidenceSummary(payload);
-    }
-
-    function compactReportText(payload, includeEvidence = true) {
-      const reportText = String(payload.report || '');
-      const confidence = firstReportValue(reportText, 'CONFIANCA');
-      const justification = firstReportValue(reportText, 'JUSTIFICATIVA');
-      const lines = [];
-
-      if (justification) lines.push(`Justificativa: ${justification}`);
-      if (confidence) lines.push(`Confianca: ${confidence}`);
-      if (includeEvidence) lines.push(`Evidencias: ${evidenceSummary(payload)}`);
-      return lines.join('\\n');
-    }
-
-    function visibleReportText(payload, includeEvidence = true) {
-      if (payload.schema_version === '2.0') {
-        if (showFullEvidence) return JSON.stringify(payload, null, 2);
-        if (payload.status === 'nao_concluida') return payload.error || payload.report || 'Analise nao concluida.';
-        const analysis = payload.structured_result || {};
-        const lines = [analysis.justificativa || payload.report || ''];
-        if (includeEvidence) lines.push(`Evidencias: ${evidenceSummary(payload)}`);
-        if (analysis.limitacoes && analysis.limitacoes.length) lines.push(`Limitacoes: ${analysis.limitacoes.slice(0, 2).join(' ')}`);
-        return lines.join('\\n');
-      }
-      return showFullEvidence ? (payload.report || compactReportText(payload)) : compactReportText(payload, includeEvidence);
-    }
-
-    function renderResultPayload(payload) {
-      lastResultPayload = payload;
-      verdict.textContent = payload.status === 'nao_concluida' ? 'Analise nao concluida' : payload.status === 'experimental' ? `Teste local: ${payload.verdict}` : `Veredito: ${payload.verdict}`;
-      verdict.className = `verdict ${verdictClass(payload.verdict)}`;
-      report.textContent = visibleReportText(payload, false);
-      report.dataset.fullReport = payload.report || '';
-      forensicScore.parentElement.hidden = payload.schema_version === '2.0';
-      forensicScore.textContent = payload.forensic_score != null ? `${payload.forensic_score}%` : '-';
-      forensicSource.textContent = payload.source || '-';
-      forensicQuality.textContent = qualityText(payload);
-      forensicAudit.textContent = auditText(payload);
-      forensicEvidence.textContent = visibleEvidenceText(payload);
-      forensicEvidence.title = fullEvidenceText(payload);
-      forensics.style.display = 'grid';
-      result.style.display = 'block';
-    }
-
-    function isModifiedHistory(item) {
-      const verdict = String(item.verdict || '').toUpperCase();
-      return verdict.includes('MODIFICADO') || verdict.includes('ALTERADA') || verdict.includes('IA') || verdict.includes('EDICAO');
-    }
-
-    function isCalibrationHistory(item) {
-      const source = String(item.source || '').toLowerCase();
-      const model = String(item.model || '').toLowerCase();
-      return source.includes('calibracao') || source.includes('feedback') || model.includes('calibracao');
-    }
-
-    function updateHistoryTabs(counts) {
-      historyTabs.querySelectorAll('.history-tab').forEach((tab) => {
-        const tabName = tab.dataset.tab;
-        tab.classList.toggle('active', tabName === activeHistoryTab);
-        const counter = tab.querySelector('.history-tab-count');
-        if (counter) counter.textContent = counts[tabName] || 0;
-      });
-    }
-
-    function emptyHistoryMessage() {
-      const labels = {
-        all: 'Nenhuma analise armazenada ainda.',
-        modified: 'Nenhuma analise modificada ou IA nesta aba.',
-        real: 'Nenhuma analise real nesta aba.',
-        inconclusive: 'Nenhuma analise inconclusiva nesta aba.',
-        calibration: 'Nenhuma calibracao salva nesta aba.'
-      };
-      return labels[activeHistoryTab] || labels.all;
-    }
-
-    function updateHistoryPager(meta) {
-      historyMeta = {
-        page: Number(meta.page || 1),
-        total_pages: Math.max(1, Number(meta.total_pages || 1)),
-        total: Number(meta.total || 0),
-        total_all: Number(meta.total_all || 0),
-        page_size: Number(meta.page_size || 8),
-        start: Number(meta.start || 0),
-        end: Number(meta.end || 0),
-        counts: meta.counts || {}
-      };
-
-      const totalLabel = historyMeta.total_all === 1 ? 'registro' : 'registros';
-      const tabTotalLabel = historyMeta.total === 1 ? 'registro nesta aba' : 'registros nesta aba';
-      historyCount.textContent = `${historyMeta.total_all} ${totalLabel}`;
-      historyRange.textContent = historyMeta.total
-        ? `${historyMeta.start}-${historyMeta.end} de ${historyMeta.total} ${tabTotalLabel}`
-        : `0 de ${historyMeta.total} registros nesta aba`;
-      historyPageLabel.textContent = `Pagina ${historyMeta.page} / ${historyMeta.total_pages}`;
-      historyPrev.disabled = historyMeta.page <= 1;
-      historyNext.disabled = historyMeta.page >= historyMeta.total_pages;
-      updateHistoryTabs(historyMeta.counts);
-      dashTotal.textContent = historyMeta.total_all || 0;
-      dashModified.textContent = historyMeta.counts.modified || 0;
-      dashReal.textContent = historyMeta.counts.real || 0;
-      dashInconclusive.textContent = historyMeta.counts.inconclusive || 0;
-    }
-
-    function renderAgents(payload) {
-      document.querySelectorAll('[data-development-only]').forEach((element) => { element.hidden = !payload.development_mode; });
-      if (!payload.development_mode) {
-        useLlmInput.checked = true;
-        useLlmInput.disabled = true;
-        selectedAgent = 'gemini';
-      }
-      const agents = payload.agents || [];
-      const availableAgents = agents.filter((agent) => agent.available && agent.mode === 'llm');
-      const selected = selectedAgent || payload.default_provider || 'gemini';
-
-      agentSelect.innerHTML = '';
-      for (const agent of availableAgents) {
-        if (!agent.provider) continue;
-        const option = document.createElement('option');
-        option.value = agent.provider;
-        option.textContent = agent.name;
-        option.selected = agent.provider === selected;
-        agentSelect.appendChild(option);
-      }
-      if (!agentSelect.value && agentSelect.options.length) {
-        agentSelect.selectedIndex = 0;
-      }
-      if (!agentSelect.options.length) {
-        const option = document.createElement('option');
-        option.value = '';
-        option.textContent = 'Nenhum agente detalhado disponivel';
-        agentSelect.appendChild(option);
-      }
-      selectedAgent = agentSelect.value;
-      if (selectedAgent) localStorage.setItem('perito.selectedAgent', selectedAgent);
-
-      const html = agents.map((agent) => `
-        <div class="agent-item">
-          <div><strong>${agent.name}</strong><br><small>${agent.detail || ''}</small></div>
-          <span class="agent-badge ${agent.available ? '' : 'off'}">${agent.state || (agent.available ? 'disponivel' : 'indisponivel')}</span>
-        </div>
-      `).join('');
-      agentList.innerHTML = html || '<div class="agent-item">Nenhum agente detectado.</div>';
-      dashboardAgents.innerHTML = html || '<div class="agent-item">Nenhum agente detectado.</div>';
-    }
-
-    function renderHistory(payload) {
-      const items = payload.history || [];
-      updateHistoryPager(payload.pagination || {});
-      if (!items.length) {
-        historyList.innerHTML = `<div class="history-empty">${emptyHistoryMessage()}</div>`;
-        return;
-      }
-
-      historyList.innerHTML = '';
-      for (const item of items) {
-        const card = document.createElement('article');
-        card.className = 'history-item';
-
-        const imageBox = document.createElement('div');
-        imageBox.className = 'history-images';
-
-        const image = document.createElement('img');
-        image.src = item.image_url;
-        image.alt = item.filename || 'Imagem analisada';
-        image.loading = 'lazy';
-        imageBox.appendChild(image);
-
-        if (item.original_image_url) {
-          const originalImage = document.createElement('img');
-          originalImage.className = 'original-thumb';
-          originalImage.src = item.original_image_url;
-          originalImage.alt = item.original_filename || 'Imagem original';
-          originalImage.loading = 'lazy';
-          imageBox.appendChild(originalImage);
-        }
-
-        const body = document.createElement('div');
-        const meta = document.createElement('div');
-        meta.className = 'history-meta';
-        const duration = item.duration_seconds ? ` · ${item.duration_seconds}s` : '';
-        meta.textContent = `${item.created_at || ''} · ${item.filename || ''}${duration}`;
-
-        const score = item.forensic_score !== undefined && item.forensic_score !== null ? ` - score ${item.forensic_score}` : '';
-        const source = item.source ? ` - ${item.source}` : '';
-        const quality = item.forensic_quality ? ` - qualidade ${item.forensic_quality}` : '';
-        const audit = item.audit_status && item.audit_status !== 'nao_executada' ? ` - auditoria ${item.audit_status}` : '';
-        meta.textContent = `${meta.textContent}${score}${quality}${audit}${source}`;
-
-        const itemVerdict = document.createElement('div');
-        itemVerdict.className = `history-verdict ${verdictClass(item.verdict)}`;
-        itemVerdict.textContent = item.status === 'nao_concluida' ? 'Analise nao concluida' : item.status === 'experimental' ? `Teste local: ${item.verdict}` : `Veredito: ${item.verdict || 'INDETERMINADO'}`;
-
-        const itemReport = document.createElement('div');
-        itemReport.className = 'history-report';
-        itemReport.textContent = visibleReportText(item);
-        itemReport.title = item.report || '';
-
-        body.append(meta, itemVerdict, itemReport);
-        card.append(imageBox, body);
-        historyList.appendChild(card);
-      }
-    }
-
-    historyTabs.addEventListener('click', (event) => {
-      const tab = event.target.closest('.history-tab');
-      if (!tab) return;
-      activeHistoryTab = tab.dataset.tab || 'all';
-      historyPage = 1;
-      loadHistory();
-    });
-
-    historyPrev.addEventListener('click', () => {
-      if (historyMeta.page <= 1) return;
-      historyPage = historyMeta.page - 1;
-      loadHistory();
-    });
-
-    historyNext.addEventListener('click', () => {
-      if (historyMeta.page >= historyMeta.total_pages) return;
-      historyPage = historyMeta.page + 1;
-      loadHistory();
-    });
-
-    async function calibrateImage(label) {
-      const file = input.files[0];
-      if (!file) {
-        statusBox.textContent = 'Selecione uma imagem antes de marcar como exemplo.';
-        return;
-      }
-
-      submit.disabled = true;
-      markReal.disabled = true;
-      markModified.disabled = true;
-      markAi.disabled = true;
-      result.style.display = 'none';
-      forensics.style.display = 'none';
-      resetThinking();
-      const statusByLabel = {
-        REAL: 'Salvando exemplo local como real...',
-        MODIFICADO: 'Salvando exemplo local como modificado...',
-        IA_GERADA_EDITADA: 'Salvando exemplo local como IA/editada...'
-      };
-      statusBox.textContent = statusByLabel[label] || 'Salvando exemplo local...';
-
-      const data = new FormData();
-      data.append('image', file);
-      data.append('label', label);
-      if (originalInput.files[0]) {
-        data.append('original_image', originalInput.files[0]);
-      }
-
-      try {
-        const response = await fetch('/calibrate', { method: 'POST', body: data });
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || 'Falha ao salvar exemplo.');
-
-        renderResultPayload(payload);
-        statusBox.textContent = originalInput.files[0]
-          ? 'Par salvo. O projeto local vai usar o padrao de diferenca entre suspeita e original nas proximas analises.'
-          : 'Exemplo salvo. O projeto local vai usar esse perfil visual para reconhecer padroes parecidos nas proximas analises.';
-        historyPage = 1;
-        await loadHistory();
-      } catch (error) {
-        statusBox.textContent = error.message;
-      } finally {
-        submit.disabled = false;
-        markReal.disabled = false;
-        markModified.disabled = false;
-        markAi.disabled = false;
-      }
-    }
-
-    async function loadHistory() {
-      try {
-        const params = new URLSearchParams({
-          tab: activeHistoryTab,
-          page: String(historyPage)
-        });
-        const response = await fetch(`/history?${params.toString()}`);
-        if (!response.ok) return;
-        const payload = await response.json();
-        if (showFullEvidence && payload.history) {
-          payload.history = await Promise.all(payload.history.map(async (item) => {
-            if (!item.analysis_id) return item;
-            try {
-              const detail = await fetch(`/analysis/${encodeURIComponent(item.analysis_id)}`);
-              return detail.ok ? { ...item, ...await detail.json() } : item;
-            } catch (_) { return item; }
-          }));
-        }
-        renderHistory(payload);
-      } catch (_error) {
-        historyList.innerHTML = '<div class="history-empty">Nao foi possivel carregar o historico.</div>';
-      }
-    }
-
-    async function loadMetrics() {
-      try {
-        const response = await fetch('/metrics');
-        if (!response.ok) return;
-        const payload = await response.json();
-        if (payload.estimated_seconds) {
-          estimatedSeconds = Math.max(8, Number(payload.estimated_seconds));
-        }
-      } catch (_error) {
-        estimatedSeconds = 75;
-      }
-    }
-
-    async function loadAgents() {
-      try {
-        const response = await fetch('/agents');
-        if (!response.ok) return;
-        const payload = await response.json();
-        renderAgents(payload);
-      } catch (_error) {
-        const fallback = '<div class="agent-item">Nao foi possivel carregar agentes.</div>';
-        agentList.innerHTML = fallback;
-        dashboardAgents.innerHTML = fallback;
-      }
-    }
-
-    navItems.forEach((item) => {
-      item.addEventListener('click', () => setActivePage(item.dataset.page || 'analyze'));
-    });
-
-    showFullEvidenceInput.addEventListener('change', () => {
-      showFullEvidence = showFullEvidenceInput.checked;
-      localStorage.setItem('perito.showFullEvidence', showFullEvidence ? '1' : '0');
-      if (lastResultPayload) renderResultPayload(lastResultPayload);
-      renderHistory({ history: [], pagination: historyMeta });
-      loadHistory();
-    });
-
-    agentSelect.addEventListener('change', () => {
-      selectedAgent = agentSelect.value;
-      localStorage.setItem('perito.selectedAgent', selectedAgent);
-    });
-
-    input.addEventListener('change', () => {
-      const file = input.files[0];
-      result.style.display = 'none';
-      forensics.style.display = 'none';
-      resetThinking();
-      if (!file) {
-        preview.style.display = 'none';
-        return;
-      }
-      preview.src = URL.createObjectURL(file);
-      preview.style.display = 'block';
-    });
-
-    originalInput.addEventListener('change', () => {
-      const file = originalInput.files[0];
-      result.style.display = 'none';
-      forensics.style.display = 'none';
-      resetThinking();
-      if (!file) {
-        originalPreview.style.display = 'none';
-        return;
-      }
-      originalPreview.src = URL.createObjectURL(file);
-      originalPreview.style.display = 'block';
-    });
-
-    markReal.addEventListener('click', () => calibrateImage('REAL'));
-    markModified.addEventListener('click', () => calibrateImage('MODIFICADO'));
-    markAi.addEventListener('click', () => calibrateImage('IA_GERADA_EDITADA'));
-
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const file = input.files[0];
-      if (!file) return;
-
-      submit.disabled = true;
-      markReal.disabled = true;
-      markModified.disabled = true;
-      markAi.disabled = true;
-      statusBox.textContent = useLlmInput.checked
-        ? 'Analisando com pericia local e Gemini...'
-        : 'Analisando em modo rapido local...';
-      result.style.display = 'none';
-      forensics.style.display = 'none';
-      await loadMetrics();
-      startThinking();
-
-      const data = new FormData();
-      data.append('image', file);
-      if (originalInput.files[0]) {
-        data.append('original_image', originalInput.files[0]);
-      }
-      if (useLlmInput.checked) {
-        data.append('use_llm', '1');
-        data.append('agent_provider', selectedAgent || agentSelect.value || '');
-      }
-
-      try {
-        const response = await fetch('/analyze', { method: 'POST', body: data });
-        const payload = await response.json();
-        if (!response.ok && payload.status !== 'nao_concluida') throw new Error(payload.error || 'Falha na analise.');
-
-        renderResultPayload(payload);
-        finishThinking(payload.status === 'nao_concluida' ? 'Analise nao concluida.' : 'Resposta pronta.');
-        statusBox.textContent = payload.status === 'nao_concluida' ? 'Evidencias preservadas. A analise pode ser tentada novamente.' : payload.duration_seconds
-          ? `Analise concluida em ${payload.duration_seconds}s.`
-          : 'Analise concluida.';
-        historyPage = 1;
-        await loadHistory();
-      } catch (error) {
-        clearInterval(progressTimer);
-        statusBox.textContent = error.message;
-      } finally {
-        submit.disabled = false;
-        markReal.disabled = false;
-        markModified.disabled = false;
-        markAi.disabled = false;
-      }
-    });
-
-    loadHistory();
-    loadMetrics();
-    loadAgents();
-  </script>
-</body>
-</html>
-"""
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+HTML = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 
 
 def configure_stdio() -> None:
@@ -2486,16 +656,13 @@ def normalize_history_item(item: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
+def history_store() -> HistoryStore:
+    return HistoryStore(HISTORY_FILE.with_suffix(".sqlite3"), HISTORY_FILE)
+
+
 def load_history() -> list[dict[str, Any]]:
-    if not HISTORY_FILE.exists():
-        return []
-    try:
-        data = json.loads(HISTORY_FILE.read_text(encoding="utf-8-sig"))
-    except (OSError, json.JSONDecodeError):
-        return []
-    if not isinstance(data, list):
-        return []
-    return [normalize_history_item(item) for item in data if isinstance(item, dict)]
+    return [normalize_history_item(item) for item in history_store().all()]
+
 
 
 def history_is_modified(item: dict[str, Any]) -> bool:
@@ -2532,12 +699,12 @@ def history_tab_counts(history: list[dict[str, Any]]) -> dict[str, int]:
     }
 
 
-def paginated_history(tab: str, page: int, page_size: int = HISTORY_PAGE_SIZE) -> dict[str, Any]:
+def paginated_history(tab: str, page: int, page_size: int = HISTORY_PAGE_SIZE, model: str = "") -> dict[str, Any]:
     valid_tabs = {"all", "modified", "real", "inconclusive", "calibration"}
     tab = tab if tab in valid_tabs else "all"
     history = load_history()
     counts = history_tab_counts(history)
-    filtered = [item for item in history if history_matches_tab(item, tab)]
+    filtered = [item for item in history if history_matches_tab(item, tab) and (not model or item.get("model") == model)]
     total = len(filtered)
     page_size = max(1, min(int(page_size), 50))
     total_pages = max(1, (total + page_size - 1) // page_size)
@@ -2546,6 +713,7 @@ def paginated_history(tab: str, page: int, page_size: int = HISTORY_PAGE_SIZE) -
     end_index = min(start_index + page_size, total)
     return {
         "history": filtered[start_index:end_index],
+        "models": sorted({str(item["model"]) for item in history if item.get("model")}),
         "pagination": {
             "tab": tab,
             "page": page,
@@ -2710,6 +878,31 @@ def ollama_is_available() -> bool:
         return False
 
 
+def model_catalog() -> dict[str, Any]:
+    descriptors = [{"provider": "gemini", "model": model, "vision": True, "loaded": None,
+                    "server": "Google Gemini API", "configured": bool(AI_SETTINGS.api_key)} for model in SUPPORTED_MODELS]
+    catalog = {"models": list(SUPPORTED_MODELS), "local_models": [], "lmstudio_status": "", "catalog": descriptors}
+    if not DEVELOPMENT_MODE:
+        catalog["lmstudio_status"] = "Modelos locais exigem modo de desenvolvimento."
+    else:
+        try:
+            local = lmstudio_client.model_descriptors()
+            descriptors.extend(local)
+            catalog["local_models"] = [model["model"] for model in local if model["loaded"] and model["vision"] is True]
+            catalog["lmstudio_status"] = "LM Studio conectado" if catalog["local_models"] else "LM Studio: nenhum modelo visual carregado."
+        except Exception:
+            catalog["lmstudio_status"] = "LM Studio indisponivel. Verifique o servidor e LM_STUDIO_HOST."
+    for descriptor in descriptors:
+        name = descriptor["provider"] + '-' + ''.join(c if c.isalnum() or c in '-_' else '_' for c in descriptor["model"]) + '.json'
+        check = RUNTIME_DIR / 'provider_checks' / name
+        if check.is_file():
+            try:
+                descriptor['last_check'] = json.loads(check.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                pass
+    return catalog
+
+
 def available_agents() -> list[dict[str, Any]]:
     gemini_ready = bool(AI_SETTINGS.api_key)
     ollama_ready = ollama_is_available() if DEVELOPMENT_MODE else False
@@ -2741,17 +934,12 @@ def available_agents() -> list[dict[str, Any]]:
 
 
 def save_history(history: list[dict[str, Any]]) -> None:
-    HISTORY_FILE.write_text(
-        json.dumps(history[:100], ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    history_store().upsert_all(history)
 
 
 def append_history(entry: dict[str, Any]) -> None:
-    with HISTORY_LOCK:
-        history = load_history()
-        history.insert(0, entry)
-        save_history(history)
+    history_store().append(entry)
+
 
 
 def calibration_entry_for_label(label: str) -> dict[str, Any]:
@@ -3008,18 +1196,35 @@ def run_clinical_audit(
         }
 
 
+def get_job_queue() -> JobQueue:
+    global JOB_QUEUE
+    with JOB_LOCK:
+        if JOB_QUEUE is None:
+            JOB_QUEUE = JobQueue(HISTORY_FILE.with_name("jobs.sqlite3"))
+        return JOB_QUEUE
+
+
 def analyze_image(
     image_path: Path,
     original_path: Path | None = None,
     use_llm: bool = False,
     agent_provider: str | None = None,
+    model: str | None = None,
+    cancelled=None,
 ) -> dict[str, Any]:
     provider = agent_provider or LLM_PROVIDER
+    if provider == "lmstudio" and DEVELOPMENT_MODE:
+        return run_integrity_pipeline(image_path, original_path,
+                                      settings=replace(AI_SETTINGS, provider="lmstudio", model=model or "", development=True),
+                                      cache_dir=ANALYSIS_DIR, calibration=load_calibration(), cancelled=cancelled)
     if not DEVELOPMENT_MODE or (use_llm and provider in {"gemini", "google", "gemini_flash"}):
         if provider not in {"gemini", "google", "gemini_flash"}:
             raise RuntimeError("Troca de provedor permitida apenas em desenvolvimento.")
-        return run_integrity_pipeline(image_path, original_path, settings=AI_SETTINGS,
-                                      cache_dir=ANALYSIS_DIR, calibration=load_calibration())
+        selected_model = model or AI_SETTINGS.model
+        if selected_model not in SUPPORTED_MODELS:
+            raise ValueError("Modelo nao permitido.")
+        return run_integrity_pipeline(image_path, original_path, settings=replace(AI_SETTINGS, model=selected_model),
+                                      cache_dir=ANALYSIS_DIR, calibration=load_calibration(), cancelled=cancelled)
     total_started = time.perf_counter()
     forensic = analyze_forensics(
         image_path,
@@ -3027,7 +1232,7 @@ def analyze_image(
         calibration=load_calibration(),
         calibration_samples=load_calibration_samples(),
     )
-    if not use_llm or forensic.skip_llm:
+    if not use_llm or (forensic.skip_llm and provider != "lmstudio"):
         local_result = report_from_forensics(forensic)
         return {
             "status": "experimental",
@@ -3044,7 +1249,11 @@ def analyze_image(
     prompt = build_advanced_codex_prompt(forensic)
 
     analysis_path = prepare_analysis_image(image_path)
-    response_text, llm_source, llm_model = call_detailed_llm(prompt, analysis_path, provider=agent_provider)
+    if provider == "lmstudio":
+        response_text = lmstudio_client.analyze(prompt, analysis_path, model or "")
+        llm_source, llm_model = "experimental_lmstudio", model
+    else:
+        response_text, llm_source, llm_model = call_detailed_llm(prompt, analysis_path, provider=agent_provider)
     report = normalize_llm_response(response_text)
     audit_result = run_clinical_audit(forensic, report, response_text, analysis_path, provider=agent_provider)
     normalized = merge_audit_and_forensics(report, audit_result, forensic)
@@ -3067,6 +1276,38 @@ def analyze_image(
     }
 
 
+def record_analysis(result, image_path, original_path, filename, original_filename):
+    entry = {
+        "id": image_path.stem,
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "filename": filename,
+        "stored_filename": image_path.name,
+        "image_url": f"/uploads/{image_path.name}",
+        "original_filename": original_filename if original_path is not None else None,
+        "original_stored_filename": original_path.name if original_path is not None else None,
+        "original_image_url": f"/uploads/{original_path.name}" if original_path is not None else None,
+        "model": result.get("model", MODEL),
+        "verdict": result["verdict"],
+        "report": result["report"],
+        "duration_seconds": result.get("duration_seconds"),
+        "source": result.get("source", "llm"),
+        "forensic_score": result.get("forensic_score"),
+        "forensic_evidence": result.get("forensic_evidence", []),
+        "forensic_quality": result.get("forensic_quality"),
+        "forensic_metrics": result.get("forensic_metrics", {}),
+        "llm_raw_response": result.get("llm_raw_response"),
+        "llm_initial_response": result.get("llm_initial_response"),
+        "llm_audit_response": result.get("llm_audit_response"),
+        "audit_status": result.get("audit_status"),
+        "audit_evidence": result.get("audit_evidence", []),
+    }
+    for key in ("schema_version", "analysis_id", "evidence_id", "status", "confidence", "structured_result", "error", "error_code", "limitations", "audit", "provider", "experimental"):
+        if key in result:
+            entry[key] = result[key]
+    append_history(entry)
+    return entry
+
+
 def json_response(handler: BaseHTTPRequestHandler, status: HTTPStatus, payload: dict[str, Any]) -> None:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     handler.send_response(status)
@@ -3085,16 +1326,25 @@ class MultipartField:
 
 def parse_multipart_form(handler: BaseHTTPRequestHandler, content_type: str) -> dict[str, MultipartField]:
     content_length = int(handler.headers.get("Content-Length", "0") or "0")
+    if content_length <= 0 or content_length > MAX_REQUEST_BYTES or handler.headers.get("Transfer-Encoding"):
+        raise ValueError("Tamanho do formulario invalido.")
+    handler.connection.settimeout(30)
     body = handler.rfile.read(content_length)
+    if len(body) != content_length:
+        raise ValueError("Formulario incompleto.")
     message = BytesParser(policy=email.policy.default).parsebytes(
         b"Content-Type: " + content_type.encode("utf-8") + b"\r\n\r\n" + body
     )
 
+    if not message.is_multipart() or message.defects:
+        raise ValueError("Formulario multipart invalido.")
     form: dict[str, MultipartField] = {}
     for part in message.iter_parts():
         name = part.get_param("name", header="content-disposition")
         if not name:
             continue
+        if name in form or len(form) >= 12:
+            raise ValueError("Campos duplicados ou em excesso.")
 
         filename = part.get_filename() or ""
         payload = part.get_payload(decode=True) or b""
@@ -3104,20 +1354,52 @@ def parse_multipart_form(handler: BaseHTTPRequestHandler, content_type: str) -> 
 
 
 def save_uploaded_image(field: Any) -> Path:
-    extension = Path(field.filename).suffix.lower()
-    if extension not in ALLOWED_EXTENSIONS:
-        raise ValueError("Formato nao suportado. Use PNG, JPG, WEBP ou BMP.")
-    UPLOAD_DIR.mkdir(exist_ok=True)
-    image_path = UPLOAD_DIR / f"{uuid.uuid4().hex}{extension}"
-    with image_path.open("wb") as output:
-        output.write(field.file.read())
-    return image_path
+    return save_image(field, UPLOAD_DIR)
 
 
 class PeritoHandler(BaseHTTPRequestHandler):
+    def handle(self):
+        try:
+            super().handle()
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            # Closing a tab does not cancel the durable analysis job.
+            self.close_connection = True
+
+    def end_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'")
+        super().end_headers()
+
+    def valid_origin(self):
+        expected = {f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}"}
+        if self.headers.get("Host") not in expected:
+            return False
+        origin = self.headers.get("Origin")
+        return not origin or origin in {"http://" + host for host in expected}
+
     def do_GET(self) -> None:
+        if not self.valid_origin():
+            self.send_error(HTTPStatus.FORBIDDEN)
+            return
         parsed_url = urlparse(self.path)
         request_path = parsed_url.path
+
+        if re.fullmatch(r"/jobs/[a-f0-9]{32}", request_path):
+            job = get_job_queue().get(request_path.rsplit("/", 1)[1])
+            json_response(self, HTTPStatus.OK if job else HTTPStatus.NOT_FOUND, job or {"error": "Analise nao encontrada."})
+            return
+
+        if request_path in {"/static/app.css", "/static/app.js"}:
+            path = STATIC_DIR / request_path.rsplit("/", 1)[1]
+            body = path.read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/css; charset=utf-8" if path.suffix == ".css" else "text/javascript; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
 
         if request_path == "/history":
             query = parse_qs(parsed_url.query)
@@ -3130,7 +1412,7 @@ class PeritoHandler(BaseHTTPRequestHandler):
                 page_size = int(query.get("page_size", [str(HISTORY_PAGE_SIZE)])[0])
             except (TypeError, ValueError):
                 page_size = HISTORY_PAGE_SIZE
-            json_response(self, HTTPStatus.OK, paginated_history(tab, page, page_size))
+            json_response(self, HTTPStatus.OK, paginated_history(tab, page, page_size, query.get("model", [""])[0]))
             return
 
         if request_path == "/metrics":
@@ -3150,6 +1432,8 @@ class PeritoHandler(BaseHTTPRequestHandler):
                 {
                     "default_provider": "gemini" if preferred in {"google", "gemini_flash"} else preferred,
                     "agents": agents,
+                    **model_catalog(),
+                    "default_model": GEMINI_MODEL,
                     "development_mode": DEVELOPMENT_MODE,
                 },
             )
@@ -3157,6 +1441,9 @@ class PeritoHandler(BaseHTTPRequestHandler):
 
         if request_path.startswith("/analysis/"):
             analysis_id = request_path.removeprefix("/analysis/")
+            exporting = analysis_id.endswith("/export")
+            if exporting:
+                analysis_id = analysis_id.removesuffix("/export")
             if not re.fullmatch(r"[a-f0-9]{32}", analysis_id):
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
@@ -3164,7 +1451,17 @@ class PeritoHandler(BaseHTTPRequestHandler):
             if not saved_result.is_file():
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            json_response(self, HTTPStatus.OK, json.loads(saved_result.read_text(encoding="utf-8")))
+            payload = json.loads(saved_result.read_text(encoding="utf-8"))
+            if exporting:
+                body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Disposition", f'attachment; filename="analysis-{analysis_id}.json"')
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            json_response(self, HTTPStatus.OK, payload)
             return
 
         if request_path.startswith("/uploads/"):
@@ -3202,6 +1499,23 @@ class PeritoHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self) -> None:
+        if self.path == '/calibrate':
+            try:
+                with file_lock(RUNTIME_DIR / '.dataset.lock'):
+                    self.handle_post()
+            except ResourceBusy as exc:
+                json_response(self, HTTPStatus.CONFLICT, {'error': str(exc)})
+            return
+        self.handle_post()
+
+    def handle_post(self) -> None:
+        if not self.valid_origin():
+            self.send_error(HTTPStatus.FORBIDDEN)
+            return
+        if re.fullmatch(r"/jobs/[a-f0-9]{32}/cancel", self.path):
+            job = get_job_queue().cancel(self.path.split("/")[2])
+            json_response(self, HTTPStatus.OK if job else HTTPStatus.NOT_FOUND, job or {"error": "Analise nao encontrada."})
+            return
         if self.path not in {"/analyze", "/calibrate"}:
             self.send_error(HTTPStatus.NOT_FOUND, "Endpoint nao encontrado")
             return
@@ -3217,13 +1531,29 @@ class PeritoHandler(BaseHTTPRequestHandler):
 
         try:
             form = parse_multipart_form(self, content_type)
-        except ValueError:
+        except (ValueError, TimeoutError, OSError):
             json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Formulario multipart invalido."})
             return
         field = form["image"] if "image" in form else None
         if field is None or not getattr(field, "filename", ""):
             json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Nenhuma imagem foi enviada."})
             return
+
+        use_llm = "use_llm" in form and str(getattr(form["use_llm"], "value", "")).lower() in {"1", "true", "sim", "on"}
+        agent_provider = str(getattr(form.get("agent_provider"), "value", "") or "").strip().lower() or None
+        model = str(getattr(form.get("model"), "value", "") or "").strip() or None
+        if self.path == '/analyze':
+            if agent_provider != "lmstudio" and model is not None and model not in SUPPORTED_MODELS:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Modelo nao permitido."})
+                return
+            if not DEVELOPMENT_MODE and agent_provider not in {None, "gemini"}:
+                json_response(self, HTTPStatus.FORBIDDEN, {"error": "Producao exige o provedor Gemini."})
+                return
+        else:
+            label = canonical_integrity_label(str(getattr(form.get('label'), 'value', 'MODIFICADO')).upper())
+            if label not in {"REAL", "MODIFICADO", "IA_GERADA_EDITADA"}:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Rotulo invalido. Use REAL, MODIFICADO ou IA_GERADA_EDITADA."})
+                return
 
         try:
             image_path = save_uploaded_image(field)
@@ -3237,21 +1567,21 @@ class PeritoHandler(BaseHTTPRequestHandler):
             try:
                 original_path = save_uploaded_image(original_field)
             except ValueError as exc:
+                image_path.unlink(missing_ok=True)
                 json_response(self, HTTPStatus.BAD_REQUEST, {"error": f"Imagem original: {exc}"})
                 return
 
         if self.path == "/calibrate":
-            label_field = form["label"] if "label" in form else None
-            label = str(getattr(label_field, "value", "MODIFICADO")).upper()
-            label = canonical_integrity_label(label)
-            if label not in {"REAL", "MODIFICADO", "IA_GERADA_EDITADA"}:
-                json_response(
-                    self,
-                    HTTPStatus.BAD_REQUEST,
-                    {"error": "Rotulo invalido. Use REAL, MODIFICADO ou IA_GERADA_EDITADA."},
-                )
+            try:
+                protected = held_out_hashes(RUNTIME_DIR / "datasets" / "manifest.json")
+                if file_sha256(image_path) in protected or (original_path and file_sha256(original_path) in protected):
+                    raise ValueError("Imagem reservada para teste; nao pode entrar na calibracao.")
+            except ValueError as exc:
+                image_path.unlink(missing_ok=True)
+                if original_path:
+                    original_path.unlink(missing_ok=True)
+                json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
                 return
-
             result = calibrated_feedback_result(label)
             result["status"] = "experimental"
             calibration = load_calibration()
@@ -3340,63 +1670,46 @@ class PeritoHandler(BaseHTTPRequestHandler):
             json_response(self, HTTPStatus.OK, {**payload, "history_item": entry})
             return
 
-        use_llm = "use_llm" in form and str(getattr(form["use_llm"], "value", "")).lower() in {"1", "true", "sim", "on"}
-        agent_provider = str(getattr(form.get("agent_provider"), "value", "") or "").strip().lower() or None
-        if not DEVELOPMENT_MODE and agent_provider not in {None, "gemini"}:
-            json_response(self, HTTPStatus.FORBIDDEN, {"error": "Producao exige o provedor Gemini."})
+        # Both legacy synchronous callers and the UI share the same bounded worker.
+        if self.path == "/analyze":
+            filename = Path(field.filename).name
+            original_filename = Path(original_field.filename).name if original_path else None
+            def operation(cancelled):
+                result = analyze_image(image_path, original_path, use_llm=use_llm,
+                                       agent_provider=agent_provider, model=model, cancelled=cancelled)
+                if not cancelled():
+                    entry = record_analysis(result, image_path, original_path, filename, original_filename)
+                    result["history_item"] = entry
+                return result
+            try:
+                identifier = get_job_queue().submit(operation)
+            except QueueFull as exc:
+                image_path.unlink(missing_ok=True)
+                if original_path:
+                    original_path.unlink(missing_ok=True)
+                json_response(self, HTTPStatus.TOO_MANY_REQUESTS, {"error": str(exc)})
+                return
+            if self.headers.get("Prefer") == "respond-async":
+                json_response(self, HTTPStatus.ACCEPTED, {"job_id": identifier, "state": "aguardando"})
+                return
+            while True:
+                job = get_job_queue().get(identifier)
+                if job["state"] in {"concluida", "falhou", "cancelada"}:
+                    payload = job.get("result", {"status": "nao_concluida", "verdict": None, "error": job.get("error", "Analise cancelada.")})
+                    status = HTTPStatus.OK if job["state"] == "concluida" else HTTPStatus.SERVICE_UNAVAILABLE
+                    json_response(self, status, payload)
+                    break
+                time.sleep(0.1)
             return
-
-        try:
-            result = analyze_image(image_path, original_path, use_llm=use_llm, agent_provider=agent_provider)
-        except ollama.ResponseError as exc:
-            json_response(self, HTTPStatus.BAD_GATEWAY, {"error": f"Erro do Ollama: {exc}"})
-            return
-        except RuntimeError as exc:
-            json_response(self, HTTPStatus.BAD_GATEWAY, {"error": str(exc)})
-            return
-        except Exception as exc:
-            json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"Erro inesperado: {exc}"})
-            return
-
-        entry = {
-            "id": image_path.stem,
-            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "filename": Path(field.filename).name,
-            "stored_filename": image_path.name,
-            "image_url": f"/uploads/{image_path.name}",
-            "original_filename": Path(original_field.filename).name if original_path is not None else None,
-            "original_stored_filename": original_path.name if original_path is not None else None,
-            "original_image_url": f"/uploads/{original_path.name}" if original_path is not None else None,
-            "model": result.get("model", MODEL),
-            "verdict": result["verdict"],
-            "report": result["report"],
-            "duration_seconds": result.get("duration_seconds"),
-            "source": result.get("source", "llm"),
-            "forensic_score": result.get("forensic_score"),
-            "forensic_evidence": result.get("forensic_evidence", []),
-            "forensic_quality": result.get("forensic_quality"),
-            "forensic_metrics": result.get("forensic_metrics", {}),
-            "llm_raw_response": result.get("llm_raw_response"),
-            "llm_initial_response": result.get("llm_initial_response"),
-            "llm_audit_response": result.get("llm_audit_response"),
-            "audit_status": result.get("audit_status"),
-            "audit_evidence": result.get("audit_evidence", []),
-        }
-        for key in ("schema_version", "analysis_id", "evidence_id", "status", "confidence", "structured_result", "error", "error_code", "limitations", "audit"):
-            if key in result:
-                entry[key] = result[key]
-        append_history(entry)
-        response_status = HTTPStatus.SERVICE_UNAVAILABLE if result.get("status") == "nao_concluida" else HTTPStatus.OK
-        json_response(self, response_status, {**result, "history_item": entry})
 
     def log_message(self, format: str, *args: object) -> None:
         print(f"{self.address_string()} - {format % args}")
 
 
-def main() -> int:
+def serve() -> int:
     configure_stdio()
-    UPLOAD_DIR.mkdir(exist_ok=True)
-    ANALYSIS_DIR.mkdir(exist_ok=True)
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
     if HISTORY_FILE.exists():
         save_history(load_history())
     server = ThreadingHTTPServer(("127.0.0.1", PORT), PeritoHandler)
@@ -3407,8 +1720,15 @@ def main() -> int:
     except KeyboardInterrupt:
         print("Servidor encerrado.")
     finally:
+        if JOB_QUEUE is not None:
+            JOB_QUEUE.close()
         server.server_close()
     return 0
+
+
+def main() -> int:
+    with file_lock(RUNTIME_DIR / '.service.lock'):
+        return serve()
 
 
 if __name__ == "__main__":

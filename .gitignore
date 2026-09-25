@@ -1,10 +1,20 @@
 .venv/
+node_modules/
 __pycache__/
 *.pyc
 
 logs/
 runtime/analysis_cache/
 runtime/outputs/
+runtime/uploads/
+runtime/analysis_history.json
+runtime/integrity_calibration.json
+runtime/*.sqlite3*
+runtime/evaluations/
+runtime/datasets/
+runtime/provider_checks/
+runtime/backups/
+runtime/.*.lock
 
 .env
 .DS_Store

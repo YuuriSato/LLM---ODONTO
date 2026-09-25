@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Perito Visual</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Navegacao principal">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"></div>
+        <div class="brand-title">
+          <strong>OKTA7</strong>
+          <small>TECHNOLOGIES</small>
+        </div>
+      </div>
+      <nav class="nav">
+        <button class="nav-item" type="button" data-page="dashboard">Dashboard</button>
+        <button class="nav-item active" type="button" data-page="analyze">Perito Visual</button>
+        <button class="nav-item" type="button" data-page="history">Historico</button>
+        <button class="nav-item" type="button" data-page="calibration" data-development-only hidden>Calibracao</button>
+        <button class="nav-item" type="button" data-page="settings">Settings</button>
+      </nav>
+    </aside>
+    <div class="workspace">
+      <div class="topbar">
+        <div class="workspace-title">
+          <span>WORKSPACE</span>
+          <strong>TesteCli</strong>
+        </div>
+        <div class="search-box">Buscar analises, imagens, evidencias...</div>
+        <div class="top-actions" aria-label="Acoes da conta">
+          <div class="icon-button" title="Tema">o</div>
+          <div class="icon-button" title="Notificacoes">!</div>
+          <div class="user-chip"><span class="user-avatar">Y</span> Yuri Sato</div>
+        </div>
+      </div>
+      <main>
+        <section class="page" data-page-panel="dashboard">
+          <header>
+            <div class="hero-copy">
+              <span class="status-pill">DASHBOARD</span>
+              <h1>Resumo operacional</h1>
+              <p>Visao rapida das analises salvas, classificacoes e agentes disponiveis para teste.</p>
+            </div>
+          </header>
+          <div class="dashboard-grid">
+            <div class="dashboard-card"><span>Total de analises</span><strong id="dashTotal">0</strong><p>Registros armazenados localmente.</p></div>
+            <div class="dashboard-card"><span>Modificados / IA</span><strong id="dashModified">0</strong><p>Casos com sinal de alteracao.</p></div>
+            <div class="dashboard-card"><span>Reais</span><strong id="dashReal">0</strong><p>Imagens classificadas como integras.</p></div>
+            <div class="dashboard-card"><span>Inconclusivos</span><strong id="dashInconclusive">0</strong><p>Casos limitados por qualidade ou evidencia.</p></div>
+          </div>
+          <div class="settings-panel">
+            <span>Agentes ativos</span>
+            <div class="agent-list" id="dashboardAgents">
+              <div class="agent-item">Carregando agentes...</div>
+            </div>
+          </div>
+        </section>
+        <section class="page active" data-page-panel="analyze">
+        <header>
+          <div class="hero-copy">
+            <span class="status-pill">PERICIA LOCAL</span>
+            <h1>Perito Visual</h1>
+            <p>Envie uma foto, print ou imagem para verificar sinais de edicao manual, alteracao digital ou geracao/edicao por IA.</p>
+          </div>
+        </header>
+    <div class="analysis-layout">
+      <form class="upload" id="form">
+        <div class="field">
+          <label for="modelSelect">Modelo</label>
+          <select id="modelSelect" name="model" required disabled>
+            <option value="">Carregando modelos...</option>
+          </select>
+          <button id="refreshModels" type="button">Atualizar modelos</button>
+          <span id="modelStatus" class="hint" role="status"></span>
+        </div>
+        <div class="field">
+          <label for="image">Imagem suspeita</label>
+          <input id="image" name="image" type="file" accept="image/png,image/jpeg,image/webp,image/bmp" required>
+          <span class="hint">Foto, print, raio-X ou imagem odontologica que sera analisada.</span>
+        </div>
+        <div class="field">
+          <label for="originalImage">Imagem original opcional</label>
+          <input id="originalImage" name="original_image" type="file" accept="image/png,image/jpeg,image/webp,image/bmp">
+          <span class="hint">Use quando tiver a foto original para comparar contra a suspeita.</span>
+        </div>
+        <div class="preview-grid">
+          <img id="preview" class="preview" alt="Previa da imagem suspeita">
+          <img id="originalPreview" class="preview" alt="Previa da imagem original">
+        </div>
+        <div class="actions">
+          <button id="submit" type="submit">Analisar imagem</button>
+          <button id="cancelAnalysis" type="button" hidden>Cancelar</button>
+          <button id="resumeAnalysis" type="button" hidden>Retomar acompanhamento</button>
+        </div>
+        <div id="thinking" class="thinking" aria-live="polite">
+          <div class="thinking-head">
+            <span id="phase">Aguardando envio</span>
+            <span id="percent" class="percent">0%</span>
+          </div>
+          <div class="bar" aria-hidden="true">
+            <div id="barFill" class="bar-fill"></div>
+          </div>
+          <div class="steps">
+            <div id="stepUpload" class="step">1. Enviando imagem</div>
+            <div id="stepVision" class="step">2. Pericia local e LLM analisando evidencias</div>
+            <div id="stepReport" class="step">3. Preparando veredito</div>
+          </div>
+        </div>
+        <div id="status" class="status"></div>
+      </form>
+      <div id="result" class="result">
+        <div id="verdict" class="verdict"></div>
+        <div id="forensics" class="forensics">
+          <div class="metric"><span>Score local</span><strong id="forensicScore">-</strong></div>
+          <div class="metric"><span>Fonte</span><strong id="forensicSource">-</strong></div>
+          <div class="metric"><span>Qualidade da imagem</span><strong id="forensicQuality">-</strong></div>
+          <div class="metric"><span>Auditoria CRAG</span><strong id="forensicAudit">-</strong></div>
+          <div class="metric metric-evidence"><span>Evidencias locais</span><strong id="forensicEvidence">-</strong></div>
+        </div>
+        <pre id="report"></pre>
+      </div>
+    </div>
+        </section>
+    <section class="page history" data-page-panel="history">
+      <header class="history-head">
+        <div class="hero-copy">
+          <span class="status-pill">HISTORICO</span>
+          <h1>Historico de analises</h1>
+        </div>
+        <p id="historyCount">0 registros</p>
+      </header>
+      <div class="history-tabs" id="historyTabs" role="tablist" aria-label="Filtros do historico">
+        <button class="history-tab active" type="button" data-tab="all">Todos <span class="history-tab-count">0</span></button>
+        <button class="history-tab" type="button" data-tab="modified">Modificados/IA <span class="history-tab-count">0</span></button>
+        <button class="history-tab" type="button" data-tab="real">Reais <span class="history-tab-count">0</span></button>
+        <button class="history-tab" type="button" data-tab="inconclusive">Inconclusivos <span class="history-tab-count">0</span></button>
+        <button class="history-tab" type="button" data-tab="calibration">Calibracao <span class="history-tab-count">0</span></button>
+      </div>
+      <div class="field"><label for="historyModel">Modelo</label><select id="historyModel"><option value="">Todos os modelos</option></select></div>
+      <div class="history-pager" aria-label="Paginacao do historico">
+        <div class="history-range" id="historyRange">0 registros</div>
+        <div class="history-page-actions">
+          <button class="history-page-button" id="historyPrev" type="button" aria-label="Pagina anterior">‹</button>
+          <span class="history-page-label" id="historyPageLabel">Pagina 1 / 1</span>
+          <button class="history-page-button" id="historyNext" type="button" aria-label="Proxima pagina">›</button>
+        </div>
+      </div>
+      <div id="historyList" class="history-list">
+        <div class="history-empty">Nenhuma analise armazenada ainda.</div>
+      </div>
+    </section>
+        <section class="page" data-page-panel="calibration">
+          <header><div class="hero-copy"><span class="status-pill">DESENVOLVIMENTO</span><h1>Calibracao</h1></div></header>
+          <div class="field"><label for="calibrationImage">Imagem do exemplo</label><input id="calibrationImage" type="file" accept="image/png,image/jpeg,image/webp,image/bmp"></div>
+          <div class="field"><label for="calibrationOriginal">Referencia opcional</label><input id="calibrationOriginal" type="file" accept="image/png,image/jpeg,image/webp,image/bmp"></div>
+          <div class="actions">
+            <button id="markReal" class="feedback-button real" type="button" data-development-only hidden>Real</button>
+            <button id="markModified" class="feedback-button modified" type="button" data-development-only hidden>Modificada</button>
+            <button id="markAi" class="feedback-button ai" type="button" data-development-only hidden>IA</button>
+          </div>
+          <p id="calibrationStatus" role="status"></p>
+        </section>
+        <section class="page" data-page-panel="settings">
+          <header>
+            <div class="hero-copy">
+              <span class="status-pill">DEV SETTINGS</span>
+              <h1>Settings</h1>
+              <p>Opcoes locais para testar a interface, alternar agentes e controlar a quantidade de texto exibida.</p>
+            </div>
+          </header>
+          <div class="settings-grid">
+            <div class="settings-panel wide">
+              <span>Evidencias</span>
+              <label class="settings-row" for="showFullEvidence">
+                <strong>Exibir todo texto de evidencias</strong>
+                <input id="showFullEvidence" type="checkbox">
+              </label>
+              <p>Quando desligado, a tela mostra uma versao menor. O historico continua armazenando o texto completo.</p>
+            </div>
+            <div class="settings-panel wide">
+              <span>Agentes detectados</span>
+              <div class="agent-list" id="agentList">
+                <div class="agent-item">Carregando agentes...</div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+  <dialog id="comparisonDialog">
+    <div class="comparison-head"><h2>Comparacao</h2><button id="closeComparison" type="button" aria-label="Fechar comparacao" title="Fechar comparacao">&times;</button></div>
+    <div class="comparison-grid">
+      <figure><img id="compareReference" alt="Imagem de referencia"><figcaption>Referencia</figcaption></figure>
+      <figure><img id="compareAnalyzed" alt="Imagem analisada"><figcaption>Analisada</figcaption></figure>
+    </div>
+  </dialog>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

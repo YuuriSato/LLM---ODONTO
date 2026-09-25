@@ -7,7 +7,12 @@ from app.ai.audit import audit_analysis
 from app.ai.config import AISettings, PROMPT_VERSION, SCHEMA_VERSION, get_settings
 from app.ai.evidence import collect_evidence
 from app.ai.gemini_client import GeminiClient, ProviderError
-from app.ai.gemini_integrity_analyzer import AnalysisValidationError, GeminiIntegrityAnalyzer
+from app.ai.integrity_analyzer import AnalysisValidationError, IntegrityAnalyzer
+from app.ai.lmstudio_client import LMStudioClient
+
+
+class AnalysisCancelled(RuntimeError):
+    pass
 
 
 def save_json(path: Path, payload: dict) -> None:
@@ -16,7 +21,12 @@ def save_json(path: Path, payload: dict) -> None:
 
 def run_integrity_pipeline(image: Path, reference: Path | None = None, *, settings: AISettings | None = None,
                            cache_dir: Path | None = None, calibration: dict | None = None,
-                           analyzer: GeminiIntegrityAnalyzer | None = None, detector=None) -> dict:
+                           analyzer: IntegrityAnalyzer | None = None, detector=None, cancelled=None) -> dict:
+    def check_cancelled():
+        if cancelled and cancelled():
+            raise AnalysisCancelled("Analise cancelada.")
+
+    check_cancelled()
     started = time.perf_counter()
     settings = settings or get_settings()
     analysis_id = uuid.uuid4().hex
@@ -24,11 +34,13 @@ def run_integrity_pipeline(image: Path, reference: Path | None = None, *, settin
     folder.mkdir(parents=True, exist_ok=False)
     evidence = collect_evidence(image, analysis_id, reference, calibration, detector)
     save_json(folder / "local_evidence.json", evidence.model_dump(mode="json"))
-    analyzer = analyzer or GeminiIntegrityAnalyzer(GeminiClient(settings))
+    client = LMStudioClient(settings) if settings.provider == "lmstudio" else GeminiClient(settings)
+    analyzer = analyzer or IntegrityAnalyzer(client, check_cancelled=check_cancelled)
     result = {
         "schema_version": SCHEMA_VERSION, "analysis_id": analysis_id, "evidence_id": analysis_id,
         "status": "nao_concluida", "verdict": None, "confidence": None,
-        "source": "gemini_integrity_pipeline", "model": settings.model,
+        "source": f"{settings.provider}_integrity_pipeline", "model": settings.model,
+        "provider": settings.provider, "experimental": settings.provider != "gemini",
         "prompt_version": PROMPT_VERSION, "initial_analysis": None, "reviewed_analysis": None,
         "structured_result": None, "audit": None, "audit_status": "nao_executada", "audit_evidence": [],
         "forensic_score": None, "forensic_evidence": evidence.observations,
@@ -37,8 +49,10 @@ def run_integrity_pipeline(image: Path, reference: Path | None = None, *, settin
         "limitations": evidence.limitations, "local_evidence": evidence.model_dump(mode="json"),
     }
     try:
-        settings.validate_production()
+        check_cancelled()
+        settings.validate()
         initial = analyzer.analyze_integrity(image, evidence, reference)
+        check_cancelled()
         result["initial_analysis"] = initial.model_dump(mode="json")
         audit = audit_analysis(initial, evidence)
         result["initial_audit"] = audit
@@ -48,6 +62,7 @@ def run_integrity_pipeline(image: Path, reference: Path | None = None, *, settin
         if audit["requires_review"]:
             result["review_status"] = "solicitada"
             final = analyzer.review(image, evidence, initial, audit, reference)
+            check_cancelled()
             result["reviewed_analysis"] = final.model_dump(mode="json")
             result["review_status"] = "executada"
             audit = audit_analysis(final, evidence, reviewed=True)
@@ -63,6 +78,8 @@ def run_integrity_pipeline(image: Path, reference: Path | None = None, *, settin
         }
         result["limitations"] = result["structured_result"]["limitacoes"]
         result["report"] = f"VEREDITO: {audit['verdict']}\nJUSTIFICATIVA: {justification}\nEVIDENCIAS: " + "; ".join(evidence.observations)
+    except AnalysisCancelled:
+        result.update(status="cancelada", verdict=None, confidence=None, report="Analise cancelada.")
     except (ProviderError, AnalysisValidationError, ValueError) as exc:
         result["error_code"] = getattr(exc, "code", "invalid_configuration")
         result["error"] = str(exc)

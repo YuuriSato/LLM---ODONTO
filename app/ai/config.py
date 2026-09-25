@@ -4,6 +4,7 @@ import os
 from app.env_loader import load_project_env
 
 PRIMARY_MODEL = "gemini-flash-latest"
+SUPPORTED_MODELS = (PRIMARY_MODEL, "gemini-2.5-flash")
 SCHEMA_VERSION = "2.0"
 PROMPT_VERSION = "integrity-2.0"
 
@@ -17,9 +18,18 @@ class AISettings:
     timeout_seconds: int = 90
     max_output_tokens: int = 8192
 
+    def validate(self) -> None:
+        if self.provider == "lmstudio":
+            if not self.development:
+                raise ValueError("LM Studio exige modo de desenvolvimento.")
+            if not self.model:
+                raise ValueError("Selecione um modelo visual do LM Studio.")
+            return
+        self.validate_production()
+
     def validate_production(self) -> None:
-        if self.provider != "gemini" or self.model != PRIMARY_MODEL:
-            raise ValueError(f"Producao exige AI_PROVIDER=gemini e GEMINI_MODEL={PRIMARY_MODEL}.")
+        if self.provider != "gemini" or self.model not in SUPPORTED_MODELS:
+            raise ValueError("Producao exige Gemini e um modelo permitido.")
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY nao configurada.")
 
