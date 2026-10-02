@@ -153,6 +153,7 @@ esperados. As verificações de origem do backend permanecem ativas.
 Para LM Studio, configure `APP_ENV=development` e
 `LM_STUDIO_HOST=http://127.0.0.1:11345`. Carregue um modelo com visao no servidor
 e ajuste `LM_STUDIO_TIMEOUT_SECONDS=300` caso a inferencia local precise de mais tempo.
+O limite local de resposta pode ser alterado com `LM_STUDIO_MAX_OUTPUT_TOKENS=2048`.
 e clique em Atualizar modelos. Modelos de embeddings e modelos sem visao nao
 entram no seletor. O resultado local e experimental, mas passa pelo mesmo schema,
 verificacao de referencias e auditoria do Gemini. Nao ha reducao da imagem nesse

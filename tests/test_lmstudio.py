@@ -95,6 +95,35 @@ class LMStudioTests(unittest.TestCase):
             self.assertEqual(client.inference_timeout(settings), 300)
         with patch.dict('os.environ', {'LM_STUDIO_TIMEOUT_SECONDS': '45'}):
             self.assertEqual(client.inference_timeout(settings), 45)
+        with patch.dict('os.environ', {}, clear=True):
+            self.assertEqual(client.output_token_limit(settings), 2048)
+        with patch.dict('os.environ', {'LM_STUDIO_MAX_OUTPUT_TOKENS': '768'}):
+            self.assertEqual(client.output_token_limit(settings), 768)
+
+    def test_local_schema_bounds_repeated_text_and_references(self):
+        from app.ai.evidence_schema import bound_integrity_schema
+        from tests.test_integrity_pipeline import sample_evidence
+        schema = bound_integrity_schema(sample_evidence())
+        classified = next(item for item in schema['anyOf'] if item['properties']['conclusion_type']['const'] == 'classificada')
+        impossible = next(item for item in schema['anyOf'] if item['properties']['conclusion_type']['const'] == 'impossivel_avaliar')
+        self.assertEqual(classified['properties']['evidencias_favoraveis']['maxItems'], 3)
+        self.assertEqual(classified['properties']['limitacoes']['maxItems'], 3)
+        self.assertEqual(classified['properties']['problemas_qualidade']['maxItems'], 0)
+        self.assertEqual(impossible['properties']['problemas_qualidade']['minItems'], 1)
+        self.assertEqual(classified['properties']['veredito']['enum'], ['REAL', 'IA_GERADA', 'IA_EDITADA', 'EDICAO_TRADICIONAL'])
+        interpretation = schema['$defs']['ForensicAnalysis']['properties']['ela']
+        self.assertEqual(interpretation['properties']['referencias']['maxItems'], 1)
+        self.assertEqual(
+            interpretation['properties']['interpretacao']['const'],
+            'Consulte as referencias verificadas.',
+        )
+        quality = schema['$defs']['QualityIssue']['anyOf']
+        resolution = next(item for item in quality if item['properties']['tipo'].get('const') == 'resolucao_insuficiente')
+        self.assertEqual(resolution['properties']['fonte']['const'], 'computacional')
+        self.assertEqual(resolution['properties']['referencias']['minItems'], 1)
+        exposure = next(item for item in quality if item['properties']['tipo'].get('const') == 'exposicao_inadequada')
+        self.assertEqual(exposure['properties']['fonte']['const'], 'visual')
+        self.assertEqual(exposure['properties']['referencias']['maxItems'], 0)
 
     def test_local_pipeline_always_validates_and_audits(self):
         from tempfile import TemporaryDirectory
@@ -102,7 +131,7 @@ class LMStudioTests(unittest.TestCase):
         from unittest.mock import Mock
         from app.ai.config import AISettings
         from app.ai.pipeline import run_integrity_pipeline
-        from test_integrity_pipeline import sample_evidence, sample_analysis
+        from tests.test_integrity_pipeline import sample_evidence, sample_analysis
         with TemporaryDirectory() as folder:
             image = Path(folder) / 'image.png'
             Image.new('RGB', (32, 32), 'white').save(image)

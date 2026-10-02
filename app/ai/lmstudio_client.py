@@ -17,6 +17,11 @@ from app.ai.schemas import IntegrityAnalysis, LocalEvidence
 
 
 TEXT_SCHEMA_MODE = "text-backend-validated-1"
+LOCAL_CONCISE_PROMPT = """
+Para caber no limite do modelo local, seja extremamente conciso: use no maximo
+duas observacoes curtas por lista e uma frase curta por interpretacao. Nao repita
+metricas no texto; mantenha-as apenas nas referencias estruturadas.
+"""
 
 
 def lmstudio_image_bytes(path: Path) -> tuple[bytes, str]:
@@ -43,6 +48,11 @@ def request_json(path: str, payload: dict | None = None, timeout: float = 3):
 def inference_timeout(settings: AISettings) -> int:
     configured = os.environ.get("LM_STUDIO_TIMEOUT_SECONDS")
     return max(1, int(configured)) if configured else max(settings.timeout_seconds, 300)
+
+
+def output_token_limit(settings: AISettings, requested: int | None = None) -> int:
+    configured = max(512, int(os.environ.get("LM_STUDIO_MAX_OUTPUT_TOKENS", "2048")))
+    return min(requested or settings.max_output_tokens, configured)
 
 
 def discover_models() -> list[str]:
@@ -114,8 +124,9 @@ class LMStudioClient:
                     {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"}},
                 ])
             request = {"model": settings.model, "stream": False, "temperature": 0.1,
-                       "max_tokens": min(max_output_tokens or settings.max_output_tokens, 1024),
-                       "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}]}
+                       "max_tokens": output_token_limit(settings, max_output_tokens),
+                       "messages": [{"role": "system", "content": system + LOCAL_CONCISE_PROMPT},
+                                    {"role": "user", "content": content}]}
             bound = schema is IntegrityAnalysis and evidence is not None
             if schema:
                 request["response_format"] = {"type": "json_schema", "json_schema": {
