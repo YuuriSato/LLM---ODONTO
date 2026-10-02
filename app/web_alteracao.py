@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import email.policy
 import json
+import mimetypes
 import os
 import re
 import sys
@@ -101,8 +102,7 @@ KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "30m")
 DEFAULT_ESTIMATED_SECONDS = float(os.environ.get("DEFAULT_ESTIMATED_SECONDS", "8"))
 FAST_LOCAL_MODE = os.environ.get("FAST_LOCAL_MODE", "1").lower() not in {"0", "false", "nao", "não"}
 
-STATIC_DIR = Path(__file__).resolve().parent / "static"
-HTML = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+FRONTEND_DIST_DIR = Path(__file__).resolve().parents[1] / "frontend" / "dist"
 
 
 def configure_stdio() -> None:
@@ -1369,7 +1369,7 @@ class PeritoHandler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'")
+        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' blob: data:; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'")
         super().end_headers()
 
     def valid_origin(self):
@@ -1389,16 +1389,6 @@ class PeritoHandler(BaseHTTPRequestHandler):
         if re.fullmatch(r"/jobs/[a-f0-9]{32}", request_path):
             job = get_job_queue().get(request_path.rsplit("/", 1)[1])
             json_response(self, HTTPStatus.OK if job else HTTPStatus.NOT_FOUND, job or {"error": "Analise nao encontrada."})
-            return
-
-        if request_path in {"/static/app.css", "/static/app.js"}:
-            path = STATIC_DIR / request_path.rsplit("/", 1)[1]
-            body = path.read_bytes()
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "text/css; charset=utf-8" if path.suffix == ".css" else "text/javascript; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
             return
 
         if request_path == "/history":
@@ -1487,13 +1477,28 @@ class PeritoHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        frontend_file = FRONTEND_DIST_DIR / "index.html"
         if request_path not in {"/", "/index.html"}:
-            self.send_error(HTTPStatus.NOT_FOUND, "Pagina nao encontrada")
+            requested = (FRONTEND_DIST_DIR / unquote(request_path).lstrip("/")).resolve()
+            dist_root = FRONTEND_DIST_DIR.resolve()
+            if requested.is_relative_to(dist_root) and requested.is_file():
+                frontend_file = requested
+            else:
+                self.send_error(HTTPStatus.NOT_FOUND, "Pagina nao encontrada")
+                return
+        if not frontend_file.is_file():
+            json_response(
+                self,
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {"error": "Interface nao compilada. Execute npm install e npm run build."},
+            )
             return
-
-        body = HTML.encode("utf-8")
+        body = frontend_file.read_bytes()
         self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
+        content_type = mimetypes.guess_type(frontend_file.name)[0] or "application/octet-stream"
+        if content_type.startswith("text/") or content_type in {"application/javascript", "application/json"}:
+            content_type += "; charset=utf-8"
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -1574,7 +1579,7 @@ class PeritoHandler(BaseHTTPRequestHandler):
         if self.path == "/calibrate":
             try:
                 protected = held_out_hashes(RUNTIME_DIR / "datasets" / "manifest.json")
-                if file_sha256(image_path) in protected or (original_path and file_sha256(original_path) in protected):
+                if file_sha256(image_path).lower() in protected or (original_path and file_sha256(original_path).lower() in protected):
                     raise ValueError("Imagem reservada para teste; nao pode entrar na calibracao.")
             except ValueError as exc:
                 image_path.unlink(missing_ok=True)
@@ -1599,6 +1604,10 @@ class PeritoHandler(BaseHTTPRequestHandler):
                 forensic_metrics["comparison"] = comparison
                 calibration_entry["original_sha256"] = file_sha256(original_path)
                 calibration_entry["original_stored_filename"] = original_path.name
+                # A comparison reference may itself be synthetic or unverified.
+                calibration_entry["reference_label"] = calibration.get(
+                    file_sha256(original_path), {}
+                ).get("label")
                 calibration_entry["comparison"] = comparison
                 calibration_entry["comparison_features"] = comparison_features
                 calibration_entry["evidence"] = (
@@ -1613,18 +1622,6 @@ class PeritoHandler(BaseHTTPRequestHandler):
                         calibration_entry["justification"] = (
                             "A imagem foi marcada pelo usuario como modificada em comparacao com a original enviada."
                     )
-                    original_entry = calibration_entry_for_label("REAL")
-                    original_metrics = local_metrics(original_path)
-                    original_entry["features"] = feature_profile_from_metrics(original_metrics)
-                    original_entry["quality_status"] = original_metrics.get("quality_status")
-                    original_entry["stored_filename"] = original_path.name
-                    original_entry["learned_at"] = calibration_entry["learned_at"]
-                    original_entry["paired_modified_sha256"] = file_sha256(image_path)
-                    original_entry["evidence"] = "imagem original associada a par comparativo marcado pelo usuario"
-                    original_entry["justification"] = (
-                        "A imagem foi marcada como original de referencia para aprendizado local comparativo."
-                    )
-                    calibration[file_sha256(original_path)] = original_entry
                 result["source"] = "feedback_usuario_comparacao"
                 result["forensic_evidence"] = [calibration_entry["evidence"]]
                 result["forensic_metrics"] = forensic_metrics

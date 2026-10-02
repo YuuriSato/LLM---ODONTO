@@ -1,11 +1,15 @@
 const assert = require('node:assert/strict');
+const fsSync = require('node:fs');
 const fs = require('node:fs/promises');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 
 (async () => {
-  const server = spawn(process.env.TEST_PYTHON || 'python', ['-u', path.join(__dirname, 'ui_server.py')], { windowsHide: true });
+  const windowsVenv = path.join(__dirname, '..', '.venv', 'Scripts', 'python.exe');
+  const unixVenv = path.join(__dirname, '..', '.venv', 'bin', 'python');
+  const testPython = process.env.TEST_PYTHON || (fsSync.existsSync(windowsVenv) ? windowsVenv : fsSync.existsSync(unixVenv) ? unixVenv : 'python');
+  const server = spawn(testPython, ['-u', path.join(__dirname, 'ui_server.py')], { windowsHide: true });
   const serverClosed = new Promise(resolve => server.once('close', resolve));
   let browser;
   try {
@@ -39,15 +43,61 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
       default_model: 'gemini-flash-latest', local_models: localModels, agents: [],
     } }));
     await page.goto(url);
+    assert.equal(await page.title(), 'Sato Company | Análise de Integridade');
+    assert.equal(await page.getByText('OKTA7', { exact: true }).count(), 0);
     await page.waitForFunction(() => !document.querySelector('#modelSelect').disabled);
+    const navigate = async (name) => {
+      if (await page.locator('.menu-button').isVisible()) await page.locator('.menu-button').click();
+      await page.locator(`[data-page="${name}"]`).click();
+    };
+    await page.setViewportSize({ width: 1440, height: 950 });
+    await page.locator('[data-page="dashboard"]').focus();
+    await page.keyboard.press('Enter');
+    await page.getByRole('heading', { name: 'Painel', exact: true }).waitFor();
+    await page.locator('[data-page="analyze"]').focus();
+    await page.keyboard.press('Enter');
+    await page.getByRole('heading', { name: 'Analisar imagem', exact: true }).waitFor();
     for (const width of [1440, 1024, 768, 390, 320]) {
       await page.setViewportSize({ width, height: 950 });
       for (const tab of ['analyze', 'dashboard', 'history', 'settings', 'calibration']) {
-        await page.locator(`[data-page="${tab}"]`).click();
+        await navigate(tab);
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `${tab} overflow at ${width}`);
       }
     }
-    await page.locator('[data-page="history"]').click();
+    await navigate('analyze');
+    await page.evaluate(() => {
+      window.revokedPreviews = [];
+      const revoke = URL.revokeObjectURL.bind(URL);
+      URL.revokeObjectURL = url => { window.revokedPreviews.push(url); revoke(url); };
+    });
+    const sampleFile = { name: 'sample.png', mimeType: 'image/png', buffer: image };
+    await page.locator('#image').setInputFiles(sampleFile);
+    await page.locator('#originalImage').setInputFiles(sampleFile);
+    await page.waitForFunction(() => document.querySelector('#preview').naturalWidth > 0);
+    for (const width of [1440, 320]) {
+      await page.setViewportSize({ width, height: 950 });
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+      await page.screenshot({ path: `logs/remove-photos-${width}.png`, fullPage: true });
+    }
+    await page.getByRole('button', { name: 'Remover imagem original', exact: true }).click();
+    assert.equal(await page.locator('#originalImage').evaluate(el => el.files.length), 0);
+    await page.waitForFunction(() => !document.querySelector('#originalPreview'));
+    assert.equal(await page.locator('#image').evaluate(el => el.files.length), 1);
+    await page.getByRole('button', { name: 'Remover imagem para análise', exact: true }).click();
+    assert.equal(await page.locator('#image').evaluate(el => el.files.length), 0);
+    await page.waitForFunction(() => !document.querySelector('#preview') && !document.querySelector('.preview-grid'));
+    assert.equal(await page.evaluate(() => window.revokedPreviews.length), 2);
+    assert.equal(await page.locator('#image').evaluate(el => el.validity.valueMissing), true);
+    await page.locator('#image').setInputFiles(sampleFile);
+    await page.getByRole('button', { name: 'Remover imagem para análise', exact: true }).click();
+    await navigate('calibration');
+    for (const id of ['calibrationImage', 'calibrationOriginal']) {
+      await page.locator('#' + id).setInputFiles(sampleFile);
+      await page.locator(`[data-remove-photo="${id}"]`).click();
+      assert.equal(await page.locator('#' + id).evaluate(el => el.files.length), 0);
+      assert.equal(await page.locator(`[data-remove-photo="${id}"]`).isVisible(), false);
+    }
+    await navigate('history');
     for (const width of [1440, 390, 320]) {
       await page.setViewportSize({ width, height: 950 });
       await page.getByRole('button', { name: 'Comparar', exact: true }).click();
@@ -55,12 +105,13 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
       assert.equal(await page.locator('#comparisonDialog').evaluate(el => el.scrollWidth > el.clientWidth), false);
       await page.locator('#closeComparison').click();
     }
-    const downloadPromise = page.waitForEvent('download');
-    await page.getByRole('link', { name: 'Exportar evidencias' }).click();
-    const download = await downloadPromise;
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.getByRole('link', { name: 'Exportar evidências', exact: true }).click(),
+    ]);
     assert.deepEqual(JSON.parse(await fs.readFile(await download.path(), 'utf8')), exported);
     await page.selectOption('#historyModel', 'medgemma-test');
-    await page.locator('[data-page="analyze"]').click();
+    await navigate('analyze');
     assert.equal(await page.locator('#form #markReal').count(), 0);
     await page.selectOption('#modelSelect', 'lmstudio:medgemma-test');
     await page.reload();
@@ -72,12 +123,13 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     assert.equal(await page.locator('#modelSelect').inputValue(), 'lmstudio:medgemma-test');
     localModels = ['medgemma-test'];
     await page.locator('#refreshModels').click();
-    await page.waitForFunction(() => !document.querySelector('#submit').disabled);
+    await page.waitForFunction(() => !document.querySelector('#modelSelect').selectedOptions[0]?.disabled);
     let sent = false;
     let submissions = 0;
     await page.route('**/analyze', async route => {
       const body = route.request().postDataBuffer().toString();
       sent = body.includes('medgemma-test') && body.includes('lmstudio');
+      assert.equal(body.includes('name="original_image"'), false);
       submissions++;
       assert.equal(route.request().headers().prefer, 'respond-async');
       await route.fulfill({ status: 202, json: { job_id: 'a'.repeat(32) } });
@@ -91,8 +143,9 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     await page.locator('#image').setInputFiles({ name: 'sample.png', mimeType: 'image/png', buffer: image });
     await page.locator('#submit').click();
     await page.waitForFunction(() => sessionStorage.getItem('perito.activeJob'));
+    assert.equal(await page.locator('[data-remove-photo="image"]').isDisabled(), true);
     await page.reload();
-    await page.waitForFunction(() => document.querySelector('#status').textContent === 'Analisando');
+    await page.waitForFunction(() => document.querySelector('#phase')?.textContent === 'Analisando evidências');
     assert.equal(submissions, 1);
     assert.equal(await page.locator('#submit').isDisabled(), true);
     offline = true;
@@ -101,7 +154,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     offline = false;
     job = completed;
     await page.locator('#resumeAnalysis').click();
-    await page.waitForFunction(() => document.querySelector('#verdict').textContent.includes('Teste local'));
+    await page.waitForFunction(() => document.querySelector('#verdict')?.textContent.includes('Teste experimental'));
     assert.equal(await page.evaluate(() => sessionStorage.getItem('perito.activeJob')), null);
     assert.equal(submissions, 1);
     assert.equal(sent, true);
@@ -113,7 +166,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     await page.locator('#image').setInputFiles({ name: 'sample.png', mimeType: 'image/png', buffer: image });
     await page.locator('#submit').click();
     await page.locator('#cancelAnalysis').click();
-    await page.waitForFunction(() => document.querySelector('#status').textContent === 'Analise cancelada.');
+    await page.waitForFunction(() => document.querySelector('#status').textContent === 'Análise cancelada.');
     assert.equal(await page.evaluate(() => sessionStorage.getItem('perito.activeJob')), null);
     assert.deepEqual(errors, []);
     await page.screenshot({ path: 'logs/ui-smoke-mobile.png', fullPage: true });

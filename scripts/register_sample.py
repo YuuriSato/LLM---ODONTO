@@ -58,7 +58,7 @@ def _register_sample(args, root: Path):
         load_manifest(staging)
         calibration = root.parent / 'integrity_calibration.json'
         if args.split == 'test' and calibration.exists():
-            labels = json.loads(calibration.read_text(encoding='utf-8-sig'))
+            labels = {key.lower() for key in json.loads(calibration.read_text(encoding='utf-8-sig'))}
             if any(digest(path) in labels for path in copied):
                 raise ValueError('Imagem ja esta na calibracao; nao pode entrar no teste.')
         staging.replace(manifest_path)

@@ -24,6 +24,7 @@ class Generation:
     returned_model: str | None
     finish_reason: str
     cleanup_warnings: list[str]
+    schema_mode: str = "base"
 
 
 def provider_schema(schema: type) -> dict:
@@ -55,7 +56,7 @@ class GeminiClient:
         self.settings = settings
 
     def generate(self, prompt: str, system: str, image: Path, reference: Path | None = None,
-                 schema: type | None = None, max_output_tokens: int | None = None) -> Generation:
+                 schema: type | None = None, max_output_tokens: int | None = None, evidence=None) -> Generation:
         settings = self.settings
         if not settings.api_key:
             raise ProviderError("GEMINI_API_KEY nao configurada.", "missing_key")

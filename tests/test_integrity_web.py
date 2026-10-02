@@ -49,14 +49,66 @@ class WebIntegrityTests(unittest.TestCase):
         finally:
             connection.close()
 
-    def upload(self, fields=None, extra_headers=None):
+    def upload(self, fields=None, extra_headers=None, *, path="/analyze", reference=False):
         stream = BytesIO()
         Image.new("RGB", (32, 32), "white").save(stream, format="PNG")
         body = b'--test-boundary\r\nContent-Disposition: form-data; name="image"; filename="test.png"\r\nContent-Type: image/png\r\n\r\n' + stream.getvalue() + b"\r\n"
         for key, value in (fields or {}).items():
             body += f'--test-boundary\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{value}\r\n'.encode()
+        if reference:
+            original = BytesIO()
+            Image.new("RGB", (32, 32), "gray").save(original, format="PNG")
+            body += b'--test-boundary\r\nContent-Disposition: form-data; name="original_image"; filename="reference.png"\r\nContent-Type: image/png\r\n\r\n' + original.getvalue() + b"\r\n"
         body += b"--test-boundary--\r\n"
-        return self.request("POST", "/analyze", body, {"Content-Type": "multipart/form-data; boundary=test-boundary", **(extra_headers or {})})
+        return self.request("POST", path, body, {"Content-Type": "multipart/form-data; boundary=test-boundary", **(extra_headers or {})})
+
+    def test_calibration_does_not_invent_reference_authenticity(self):
+        for label in ("MODIFICADO", "IA_GERADA_EDITADA"):
+            with self.subTest(label=label), patch.object(web, "DEVELOPMENT_MODE", True):
+                status, body = self.upload({"label": label}, path="/calibrate", reference=True)
+                self.assertEqual(status, 200, body)
+                entries = web.load_calibration()
+                self.assertEqual(len(entries), 1)
+                entry = next(iter(entries.values()))
+                self.assertEqual(entry["label"], label)
+                self.assertIsNone(entry["reference_label"])
+                self.assertNotIn(entry["original_sha256"], entries)
+                self.assertIn("comparison_features", entry)
+                self.assertEqual(json.loads(body)["status"], "experimental")
+
+    def test_reference_keeps_existing_label_and_provenance(self):
+        original = BytesIO()
+        Image.new("RGB", (32, 32), "gray").save(original, format="PNG")
+        from hashlib import sha256
+        key = sha256(original.getvalue()).hexdigest().upper()
+        previous = {"label": "IA_GERADA_EDITADA", "provenance": "Known synthetic fixture"}
+        web.save_calibration({key: previous})
+        with patch.object(web, "DEVELOPMENT_MODE", True):
+            status, body = self.upload({"label": "MODIFICADO"}, path="/calibrate", reference=True)
+        self.assertEqual(status, 200, body)
+        entries = web.load_calibration()
+        self.assertEqual(entries[key], previous)
+        edited = next(entry for sha, entry in entries.items() if sha != key)
+        self.assertEqual(edited["reference_label"], previous["label"])
+
+    def test_held_out_image_and_reference_are_blocked_using_real_hashes(self):
+        from app.evaluation import digest
+        dataset = self.folder / 'datasets'
+        dataset.mkdir()
+        for color in ('white', 'gray'):
+            with self.subTest(protected=color):
+                image = dataset / 'held-out.png'
+                Image.new('RGB', (32, 32), color).save(image)
+                sample = dict(id='held-out', file=image.name, sha256=digest(image),
+                              group='held-out', split='test', ground_truth=None,
+                              verified=False, scope='engineering', provenance='Fixture')
+                (dataset / 'manifest.json').write_text(json.dumps(dict(schema_version='1.0', samples=[sample])))
+                with patch.object(web, 'DEVELOPMENT_MODE', True):
+                    status, body = self.upload({'label': 'MODIFICADO'}, path='/calibrate', reference=True)
+                self.assertEqual(status, 400, body)
+                self.assertIn('reservada para teste', json.loads(body)['error'])
+                self.assertFalse(web.CALIBRATION_FILE.exists())
+                self.assertEqual(list(web.UPLOAD_DIR.iterdir()), [])
 
     def test_calibration_is_forbidden_without_even_parsing_upload(self):
         status, _ = self.request("POST", "/calibrate")
@@ -147,6 +199,23 @@ class WebIntegrityTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIsNone(json.loads(body)["verdict"])
         self.assertEqual(self.request("GET", "/analysis/../../.env")[0], 404)
+
+    def test_compiled_react_interface_and_assets_are_served(self):
+        frontend = self.folder / "dist"
+        assets = frontend / "assets"
+        assets.mkdir(parents=True)
+        (frontend / "index.html").write_text(
+            '<title>Sato Company | Análise de Integridade</title>', encoding="utf-8"
+        )
+        (assets / "app.js").write_text("window.appReady=true", encoding="utf-8")
+        with patch.object(web, "FRONTEND_DIST_DIR", frontend):
+            status, body = self.request("GET", "/")
+            self.assertEqual(status, 200)
+            self.assertIn("Sato Company".encode(), body)
+            status, body = self.request("GET", "/assets/app.js")
+            self.assertEqual(status, 200)
+            self.assertEqual(body, b"window.appReady=true")
+            self.assertEqual(self.request("GET", "/../.env")[0], 404)
 
     def test_export_and_model_filter(self):
         folder = web.ANALYSIS_DIR / ('b' * 32)

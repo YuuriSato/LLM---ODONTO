@@ -109,10 +109,12 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(set(self.root.iterdir()), files)
 
     def test_calibration_image_cannot_be_registered_as_test(self):
-        (self.root.parent / 'integrity_calibration.json').write_text(json.dumps({digest(self.root / 'reference'): {}}))
         args = SimpleNamespace(image=self.root / 'image', reference=self.root / 'reference', group='pair',
                                split='test', label='IA_EDITADA', provenance='Synthetic', verified=True,
                                scope='engineering', transformation=None)
-        with self.assertRaisesRegex(ValueError, 'calibracao'):
-            register_sample(args, self.root)
-        self.assertFalse(self.path.exists())
+        for key in (digest(self.root / 'reference'), digest(self.root / 'reference').upper()):
+            with self.subTest(key=key):
+                (self.root.parent / 'integrity_calibration.json').write_text(json.dumps({key: {}}))
+                with self.assertRaisesRegex(ValueError, 'calibracao'):
+                    register_sample(args, self.root)
+                self.assertFalse(self.path.exists())
