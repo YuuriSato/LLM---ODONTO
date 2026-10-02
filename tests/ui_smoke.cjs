@@ -168,9 +168,27 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     await page.locator('#cancelAnalysis').click();
     await page.waitForFunction(() => document.querySelector('#status').textContent === 'Análise cancelada.');
     assert.equal(await page.evaluate(() => sessionStorage.getItem('perito.activeJob')), null);
+    const failedHistoryId = 'f'.repeat(32);
+    job = { state: 'falhou', result: { schema_version: '2.1', status: 'nao_concluida', conclusion_type: null,
+      verdict: null, error: 'Falha de comunicação com Gemini.', history_item: { id: failedHistoryId } } };
+    const retryJobId = 'b'.repeat(32);
+    await page.route('**/analyses/' + failedHistoryId + '/retry', route => route.fulfill({ status: 202, json: { job_id: retryJobId, state: 'aguardando' } }));
+    const impossible = { state: 'concluida', result: { schema_version: '2.1', status: 'concluida',
+      conclusion_type: 'impossivel_avaliar', verdict: 'INDETERMINADO', forensic_quality: 'insuficiente',
+      audit_status: 'executada', forensic_evidence: ['Resolução insuficiente.'], structured_result: {
+        justificativa: 'A qualidade impede uma análise útil.',
+        problemas_qualidade: [{ tipo: 'resolucao_insuficiente', descricao: 'A resolução impede observar estruturas úteis.' }],
+        limitacoes: ['Não foi possível avaliar a integridade visual.'],
+      } } };
+    await page.route('**/jobs/' + retryJobId, route => route.fulfill({ json: impossible }));
+    await page.locator('#submit').click();
+    await page.waitForFunction(() => document.querySelector('#verdict')?.textContent === 'Análise não concluída');
+    await page.locator('#retryAnalysis').click();
+    await page.waitForFunction(() => document.querySelector('#verdict')?.textContent === 'Impossível de avaliar');
+    assert.equal(await page.evaluate(() => sessionStorage.getItem('perito.activeJob')), null);
     assert.deepEqual(errors, []);
     await page.screenshot({ path: 'logs/ui-smoke-mobile.png', fullPage: true });
-    console.log('UI: 25 viewport/page checks; comparison, JSON download, model persistence/unavailability, reload/reconnect without resubmission, cancellation and calibration separation passed.');
+    console.log('UI: 25 viewport/page checks; comparison, JSON download, model persistence, reconnect, cancellation, failure retry and impossible/inconclusive states passed.');
   } finally {
     if (browser) await browser.close();
     server.stdin.end();

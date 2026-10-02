@@ -191,6 +191,16 @@ class WebIntegrityTests(unittest.TestCase):
             self.assertEqual(result["report"], old["report"])
             self.assertNotIn("forensic_score", result)
 
+    def test_history_distinguishes_inconclusive_impossible_and_failed(self):
+        web.append_history({'id': '1', 'verdict': 'INDETERMINADO', 'status': 'concluida'})
+        web.append_history({'id': '2', 'verdict': 'INDETERMINADO', 'status': 'concluida',
+                            'conclusion_type': 'impossivel_avaliar'})
+        web.append_history({'id': '3', 'verdict': None, 'status': 'nao_concluida'})
+        counts = web.history_tab_counts(web.load_history())
+        self.assertEqual(counts['inconclusive'], 1)
+        self.assertEqual(counts['impossible'], 1)
+        self.assertEqual(counts['failed'], 1)
+
     def test_details_endpoint_and_traversal(self):
         folder = web.ANALYSIS_DIR / ("a" * 32)
         folder.mkdir(parents=True)
@@ -261,6 +271,35 @@ class WebIntegrityTests(unittest.TestCase):
         self.assertEqual(job['result']['verdict'], 'INDETERMINADO')
         pipeline.assert_called_once()
         self.assertEqual(len(web.load_history()), 1)
+
+    def test_failed_analysis_can_retry_without_upload_and_preserves_history(self):
+        failed = {'schema_version': '2.1', 'analysis_id': 'c' * 32, 'status': 'nao_concluida',
+                  'conclusion_type': None, 'verdict': None, 'report': 'Falha', 'error': 'Indisponivel',
+                  'model': 'gemini-flash-latest', 'provider': 'gemini'}
+        retried = {**failed, 'analysis_id': 'd' * 32, 'status': 'concluida',
+                   'conclusion_type': 'inconclusiva', 'verdict': 'INDETERMINADO', 'report': 'Inconclusiva'}
+        with patch.object(web, 'run_integrity_pipeline', side_effect=[failed, retried]) as pipeline:
+            status, body = self.upload(extra_headers={'Prefer': 'respond-async'})
+            self.assertEqual(status, 202)
+            first_job = json.loads(body)['job_id']
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                first = json.loads(self.request('GET', '/jobs/' + first_job)[1])
+                if first['state'] == 'falhou':
+                    break
+                time.sleep(.02)
+            history_id = first['result']['history_item']['id']
+            status, body = self.request('POST', f'/analyses/{history_id}/retry')
+            self.assertEqual(status, 202, body)
+            second_job = json.loads(body)['job_id']
+            while time.monotonic() < deadline:
+                second = json.loads(self.request('GET', '/jobs/' + second_job)[1])
+                if second['state'] == 'concluida':
+                    break
+                time.sleep(.02)
+        self.assertEqual(pipeline.call_count, 2)
+        self.assertEqual(len(web.load_history()), 2)
+        self.assertEqual(second['result']['conclusion_type'], 'inconclusiva')
 
     def test_http_queue_capacity_and_cancel(self):
         from app.jobs import JobQueue

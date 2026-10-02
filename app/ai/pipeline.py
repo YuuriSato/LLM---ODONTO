@@ -38,7 +38,7 @@ def run_integrity_pipeline(image: Path, reference: Path | None = None, *, settin
     analyzer = analyzer or IntegrityAnalyzer(client, check_cancelled=check_cancelled)
     result = {
         "schema_version": SCHEMA_VERSION, "analysis_id": analysis_id, "evidence_id": analysis_id,
-        "status": "nao_concluida", "verdict": None, "confidence": None,
+        "status": "nao_concluida", "conclusion_type": None, "verdict": None, "confidence": None,
         "source": f"{settings.provider}_integrity_pipeline", "model": settings.model,
         "provider": settings.provider, "experimental": settings.provider != "gemini",
         "prompt_version": PROMPT_VERSION, "initial_analysis": None, "reviewed_analysis": None,
@@ -66,20 +66,25 @@ def run_integrity_pipeline(image: Path, reference: Path | None = None, *, settin
             result["reviewed_analysis"] = final.model_dump(mode="json")
             result["review_status"] = "executada"
             audit = audit_analysis(final, evidence, reviewed=True)
-        result.update(status="concluida", verdict=audit["verdict"], confidence=audit["confidence"],
+        result.update(status="concluida", conclusion_type=audit["conclusion_type"],
+                      verdict=audit["verdict"], confidence=audit["confidence"],
                       audit=audit, audit_evidence=audit["reasons"], audit_status="executada")
         justification = final.justificativa
         if audit["reasons"]:
             justification = "Conclusao indeterminada: " + " ".join(audit["reasons"])
         result["structured_result"] = {
-            "veredito": audit["verdict"], "confidence": audit["confidence"],
+            "conclusion_type": audit["conclusion_type"], "veredito": audit["verdict"], "confidence": audit["confidence"],
             "confidence_kind": audit["confidence_kind"], "modalidade": final.modalidade,
-            "justificativa": justification, "limitacoes": list(dict.fromkeys(evidence.limitations + final.limitacoes)),
+            "justificativa": justification,
+            "problemas_qualidade": [item.model_dump(mode="json") for item in final.problemas_qualidade]
+                if audit["conclusion_type"] == "impossivel_avaliar" else [],
+            "limitacoes": list(dict.fromkeys(evidence.limitations + final.limitacoes)),
         }
         result["limitations"] = result["structured_result"]["limitacoes"]
-        result["report"] = f"VEREDITO: {audit['verdict']}\nJUSTIFICATIVA: {justification}\nEVIDENCIAS: " + "; ".join(evidence.observations)
+        result["report"] = (f"CONCLUSAO: {audit['conclusion_type']}\nVEREDITO: {audit['verdict']}\n"
+                            f"JUSTIFICATIVA: {justification}\nEVIDENCIAS: " + "; ".join(evidence.observations))
     except AnalysisCancelled:
-        result.update(status="cancelada", verdict=None, confidence=None, report="Analise cancelada.")
+        result.update(status="cancelada", conclusion_type=None, verdict=None, confidence=None, report="Analise cancelada.")
     except (ProviderError, AnalysisValidationError, ValueError) as exc:
         result["error_code"] = getattr(exc, "code", "invalid_configuration")
         result["error"] = str(exc)
