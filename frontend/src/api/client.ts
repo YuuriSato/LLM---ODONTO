@@ -51,6 +51,10 @@ export const api = {
     return parseJson(await fetch(`/jobs/${id}/cancel`, { method: 'POST' }));
   },
 
+  async retryAnalysis(historyId: string): Promise<{ job_id: string; state: string }> {
+    return parseJson(await fetch(`/analyses/${historyId}/retry`, { method: 'POST' }));
+  },
+
   async calibrate(image: File, original: File | null, label: string): Promise<AnalysisResult> {
     const data = new FormData();
     data.append('image', image);

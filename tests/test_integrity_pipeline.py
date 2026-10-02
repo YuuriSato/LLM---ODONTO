@@ -24,6 +24,8 @@ def sample_evidence():
                 "nitidez": "textura", "compressao": "compressao", "metadata": "metadata", "detector_ia": "detector", "comparacao": "comparacao"}
     records = [EvidenceRecord(id=key, family=family, status="disponivel", method="synthetic test",
                               values={"measurement": 1.0}, signal="sem_anomalia") for key, family in families.items()]
+    records.append(EvidenceRecord(id="dimensoes", family="qualidade", status="disponivel", method="synthetic test",
+                                  values={"image_min_side": 640, "image_megapixels": 1.0}, signal="descritivo"))
     for record in records:
         if record.id in {"detector_ia", "comparacao"}:
             record.status = "desativado" if record.id == "detector_ia" else "ausente"
@@ -33,7 +35,7 @@ def sample_evidence():
                          quality="boa", records=records, observations=["Synthetic evidence"], limitations=[])
 
 
-def sample_analysis(evidence=None, verdict="REAL"):
+def sample_analysis(evidence=None, verdict="REAL", conclusion_type=None, quality_issues=None):
     evidence = evidence or sample_evidence()
     sections = {}
     for name in ForensicAnalysis.model_fields:
@@ -41,6 +43,7 @@ def sample_analysis(evidence=None, verdict="REAL"):
         sections[name] = {"status": record.status, "interpretacao": "Descricao qualitativa",
                           "referencias": [{"evidence_id": name, "metric": "measurement", "value": 1.0}] if record.status == "disponivel" else []}
     raw = {
+        "conclusion_type": conclusion_type or ("inconclusiva" if verdict == "INDETERMINADO" else "classificada"),
         "veredito": verdict, "confidence": 0.91, "modalidade": "INTRAORAL", "justificativa": "Justificativa especifica.",
         "analise_visual": {key: [] for key in ("anatomia_dental", "texturas", "bordas", "iluminacao", "artefatos_suspeitos")},
         "analise_forense": sections,
@@ -49,7 +52,8 @@ def sample_analysis(evidence=None, verdict="REAL"):
             {"descricao": "Medicoes locais", "fonte": "computacional", "referencias": [
                 {"evidence_id": "ela", "metric": "measurement", "value": 1.0},
                 {"evidence_id": "ruido", "metric": "measurement", "value": 1.0}]},
-        ], "evidencias_contrarias": [], "limitacoes": [], "requer_auditoria": False,
+        ], "evidencias_contrarias": [], "problemas_qualidade": quality_issues or [],
+        "limitacoes": [], "requer_auditoria": False,
     }
     return IntegrityAnalysis.model_validate_json(json.dumps(raw))
 
@@ -94,6 +98,46 @@ class IntegrityTests(unittest.TestCase):
         self.assertEqual(result["verdict"], "REAL")
         self.assertFalse(result["requires_review"])
         self.assertEqual(result["confidence"], 0.91)
+        self.assertEqual(result["conclusion_type"], "classificada")
+
+    def test_impossible_quality_requires_supported_problem_and_review(self):
+        evidence = sample_evidence()
+        evidence.quality = "insuficiente"
+        dimensions = next(record for record in evidence.records if record.id == "dimensoes")
+        dimensions.values["image_min_side"] = 120
+        issue = [{"tipo": "resolucao_insuficiente", "descricao": "Resolucao impede observar estruturas uteis.",
+                  "fonte": "computacional", "referencias": [
+                      {"evidence_id": "dimensoes", "metric": "image_min_side", "value": 120}]}]
+        analysis = sample_analysis(evidence, "INDETERMINADO", "impossivel_avaliar", issue)
+        first = audit_analysis(analysis, evidence)
+        self.assertEqual(first["conclusion_type"], "impossivel_avaliar")
+        self.assertTrue(first["requires_review"])
+        reviewed = audit_analysis(analysis, evidence, reviewed=True)
+        self.assertEqual(reviewed["conclusion_type"], "impossivel_avaliar")
+        self.assertIsNone(reviewed["confidence"])
+
+    def test_visual_exposure_can_make_analysis_impossible(self):
+        issue = [{"tipo": "exposicao_inadequada", "descricao": "Exposicao impede distinguir as estruturas.",
+                  "fonte": "visual", "referencias": []}]
+        analysis = sample_analysis(sample_evidence(), "INDETERMINADO", "impossivel_avaliar", issue)
+        result = audit_analysis(analysis, sample_evidence(), reviewed=True)
+        self.assertEqual(result["conclusion_type"], "impossivel_avaliar")
+
+    def test_quality_unknown_is_inconclusive_not_impossible(self):
+        evidence = sample_evidence()
+        evidence.quality = "desconhecida"
+        result = audit_analysis(sample_analysis(evidence), evidence, reviewed=True)
+        self.assertEqual(result["conclusion_type"], "inconclusiva")
+        self.assertEqual(result["verdict"], "INDETERMINADO")
+
+    def test_quality_problem_rejects_invented_number_and_wrong_source(self):
+        base = sample_analysis().model_dump(mode="json")
+        base.update(conclusion_type="impossivel_avaliar", veredito="INDETERMINADO")
+        base["problemas_qualidade"] = [{"tipo": "resolucao_insuficiente", "descricao": "Abaixo de 999 pixels.",
+                                         "fonte": "computacional", "referencias": []}]
+        analysis = IntegrityAnalysis.model_validate_json(json.dumps(base))
+        with self.assertRaises(ValueError):
+            validate_references(analysis, sample_evidence())
 
     def test_numeric_computational_claims_must_use_validated_references(self):
         analysis = sample_analysis()

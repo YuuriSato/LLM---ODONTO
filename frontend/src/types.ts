@@ -31,6 +31,7 @@ export interface AnalysisResult {
   analysis_id?: string;
   schema_version?: string;
   status?: string;
+  conclusion_type?: 'classificada' | 'inconclusiva' | 'impossivel_avaliar' | null;
   experimental?: boolean;
   verdict?: string | null;
   report?: string;
@@ -46,11 +47,14 @@ export interface AnalysisResult {
   audit_evidence?: string[];
   forensic_metrics?: Record<string, unknown> & { quality_status?: string };
   structured_result?: {
+    conclusion_type?: 'classificada' | 'inconclusiva' | 'impossivel_avaliar';
     justificativa?: string;
     evidencias_favoraveis?: string[];
     evidencias_contrarias?: string[];
+    problemas_qualidade?: Array<string | { tipo?: string; descricao?: string; fonte?: string }>;
     limitacoes?: string[];
   };
+  history_item?: HistoryItem;
   [key: string]: unknown;
 }
 

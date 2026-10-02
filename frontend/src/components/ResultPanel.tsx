@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, FlaskConical, Info, ShieldCheck, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, FlaskConical, Info, RotateCcw, ShieldCheck, XCircle } from 'lucide-react';
 import type { AnalysisResult } from '../types';
 
 const verdictLabels: Record<string, string> = {
@@ -36,18 +36,26 @@ function compactEvidence(result: AnalysisResult, full: boolean) {
 function resultPresentation(result: AnalysisResult) {
   const failed = result.status === 'nao_concluida';
   const experimental = result.status === 'experimental' || result.experimental;
-  const inconclusive = result.verdict === 'INDETERMINADO';
+  const impossible = result.conclusion_type === 'impossivel_avaliar';
+  const inconclusive = result.conclusion_type === 'inconclusiva' || (!result.conclusion_type && result.verdict === 'INDETERMINADO');
   if (failed) return { label: 'Análise não concluída', tone: 'danger', Icon: XCircle };
+  if (impossible) return { label: 'Impossível de avaliar', tone: 'warning', Icon: AlertTriangle };
   if (experimental) return { label: `Teste experimental: ${verdictLabels[String(result.verdict)] || result.verdict || 'sem conclusão'}`, tone: 'warning', Icon: FlaskConical };
   if (inconclusive) return { label: 'Análise inconclusiva', tone: 'warning', Icon: AlertTriangle };
   if (result.verdict === 'REAL') return { label: verdictLabels.REAL, tone: 'success', Icon: CheckCircle2 };
   return { label: verdictLabels[String(result.verdict)] || String(result.verdict || 'Resultado disponível'), tone: 'danger', Icon: AlertTriangle };
 }
 
-export function ResultPanel({ result, showFullEvidence }: { result: AnalysisResult; showFullEvidence: boolean }) {
+export function ResultPanel({ result, showFullEvidence, onRetry, retrying = false }: {
+  result: AnalysisResult;
+  showFullEvidence: boolean;
+  onRetry?: () => void;
+  retrying?: boolean;
+}) {
   const presentation = resultPresentation(result);
   const reasons = [
     result.structured_result?.justificativa,
+    ...(result.structured_result?.problemas_qualidade || []).map(textValue),
     ...(result.structured_result?.evidencias_favoraveis || []).map(textValue),
     compactEvidence(result, showFullEvidence),
   ].filter(Boolean);
@@ -65,6 +73,11 @@ export function ResultPanel({ result, showFullEvidence }: { result: AnalysisResu
           <span className="section-label">Conclusão</span>
           <h2 id="verdict">{presentation.label}</h2>
           {result.status === 'nao_concluida' && <p>{result.error || result.report || 'O servidor não conseguiu concluir esta execução.'}</p>}
+          {result.status === 'nao_concluida' && onRetry && result.history_item?.id && (
+            <button id="retryAnalysis" className="secondary-button" type="button" onClick={onRetry} disabled={retrying}>
+              <RotateCcw aria-hidden="true" size={17} />{retrying ? 'Tentando novamente...' : 'Tentar novamente'}
+            </button>
+          )}
         </div>
       </div>
 
@@ -84,7 +97,7 @@ export function ResultPanel({ result, showFullEvidence }: { result: AnalysisResu
       <details className="technical-details">
         <summary>Detalhes técnicos</summary>
         <div id="forensics" className="technical-grid">
-          {result.schema_version !== '2.0' && <div><span>Score local</span><strong id="forensicScore">{result.forensic_score != null ? `${result.forensic_score}%` : 'Não informado'}</strong></div>}
+          {!result.schema_version && <div><span>Score local</span><strong id="forensicScore">{result.forensic_score != null ? `${result.forensic_score}%` : 'Não informado'}</strong></div>}
           <div><span>Fonte</span><strong id="forensicSource">{result.source || 'Não informada'}</strong></div>
           <div><span>Qualidade da imagem</span><strong id="forensicQuality">{quality}</strong></div>
           <div><span>Verificação das evidências</span><strong id="forensicAudit">{audit}</strong></div>

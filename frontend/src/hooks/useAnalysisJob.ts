@@ -42,7 +42,13 @@ export function useAnalysisJob(onComplete: () => void) {
         }
         if (job.state === 'falhou') {
           clearJob();
-          setError(job.error || 'A análise falhou antes de produzir um resultado.');
+          if (job.result) {
+            setResult(job.result);
+            setState(job.result.status || 'nao_concluida');
+            onComplete();
+          } else {
+            setError(job.error || 'A análise falhou antes de produzir um resultado.');
+          }
           return;
         }
         if (job.state === 'concluida') {
@@ -106,6 +112,24 @@ export function useAnalysisJob(onComplete: () => void) {
     }
   };
 
+  const retry = async () => {
+    const historyId = result?.history_item?.id;
+    if (!historyId || jobId) return;
+    setError('');
+    setConnectionLost(false);
+    setState('aguardando');
+    try {
+      const payload = await api.retryAnalysis(historyId);
+      if (!validJob(payload.job_id)) throw new Error('O servidor retornou um identificador de análise inválido.');
+      sessionStorage.setItem(JOB_KEY, payload.job_id);
+      setJobId(payload.job_id);
+      await monitor(payload.job_id);
+    } catch (reason) {
+      setState('nao_concluida');
+      setError(reason instanceof Error ? reason.message : 'Não foi possível repetir a análise.');
+    }
+  };
+
   const busy = Boolean(jobId) || ['enviando', 'aguardando', 'executando', 'cancelando'].includes(state);
-  return { jobId, state, result, error, connectionLost, busy, submit, cancel, resume: () => monitor() };
+  return { jobId, state, result, error, connectionLost, busy, submit, cancel, retry, resume: () => monitor() };
 }

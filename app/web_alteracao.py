@@ -633,8 +633,6 @@ def merge_audit_and_forensics(
 
 
 def normalize_history_item(item: dict[str, Any]) -> dict[str, Any]:
-    if item.get("schema_version") == "2.0":
-        return dict(item)
     cleaned = dict(item)
     report = str(cleaned.get("report") or "")
     cleaned["report"] = report or "Relatorio legado indisponivel."
@@ -653,6 +651,15 @@ def normalize_history_item(item: dict[str, Any]) -> dict[str, Any]:
         cleaned["audit_status"] = "nao_executada"
     if cleaned.get("audit_evidence") is None:
         cleaned["audit_evidence"] = []
+    if "conclusion_type" not in cleaned:
+        if cleaned.get("status") in {"nao_concluida", "cancelada"}:
+            cleaned["conclusion_type"] = None
+        elif str(cleaned.get("verdict") or "").upper() == "INDETERMINADO":
+            cleaned["conclusion_type"] = "inconclusiva"
+        elif cleaned.get("verdict"):
+            cleaned["conclusion_type"] = "classificada"
+        else:
+            cleaned["conclusion_type"] = None
     return cleaned
 
 
@@ -683,7 +690,11 @@ def history_matches_tab(item: dict[str, Any], tab: str) -> bool:
     if tab == "real":
         return verdict == "REAL"
     if tab == "inconclusive":
-        return verdict == "INDETERMINADO" or item.get("status") == "nao_concluida"
+        return item.get("conclusion_type") == "inconclusiva"
+    if tab == "impossible":
+        return item.get("conclusion_type") == "impossivel_avaliar"
+    if tab == "failed":
+        return item.get("status") == "nao_concluida"
     if tab == "calibration":
         return history_is_calibration(item)
     return True
@@ -694,13 +705,15 @@ def history_tab_counts(history: list[dict[str, Any]]) -> dict[str, int]:
         "all": len(history),
         "modified": sum(1 for item in history if history_is_modified(item)),
         "real": sum(1 for item in history if str(item.get("verdict") or "").upper() == "REAL"),
-        "inconclusive": sum(1 for item in history if str(item.get("verdict") or "").upper() == "INDETERMINADO"),
+        "inconclusive": sum(1 for item in history if item.get("conclusion_type") == "inconclusiva"),
+        "impossible": sum(1 for item in history if item.get("conclusion_type") == "impossivel_avaliar"),
+        "failed": sum(1 for item in history if item.get("status") == "nao_concluida"),
         "calibration": sum(1 for item in history if history_is_calibration(item)),
     }
 
 
 def paginated_history(tab: str, page: int, page_size: int = HISTORY_PAGE_SIZE, model: str = "") -> dict[str, Any]:
-    valid_tabs = {"all", "modified", "real", "inconclusive", "calibration"}
+    valid_tabs = {"all", "modified", "real", "inconclusive", "impossible", "failed", "calibration"}
     tab = tab if tab in valid_tabs else "all"
     history = load_history()
     counts = history_tab_counts(history)
@@ -1276,9 +1289,9 @@ def analyze_image(
     }
 
 
-def record_analysis(result, image_path, original_path, filename, original_filename):
+def record_analysis(result, image_path, original_path, filename, original_filename, *, history_id=None):
     entry = {
-        "id": image_path.stem,
+        "id": history_id or image_path.stem,
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "filename": filename,
         "stored_filename": image_path.name,
@@ -1301,11 +1314,26 @@ def record_analysis(result, image_path, original_path, filename, original_filena
         "audit_status": result.get("audit_status"),
         "audit_evidence": result.get("audit_evidence", []),
     }
-    for key in ("schema_version", "analysis_id", "evidence_id", "status", "confidence", "structured_result", "error", "error_code", "limitations", "audit", "provider", "experimental"):
+    for key in ("schema_version", "analysis_id", "evidence_id", "status", "conclusion_type", "confidence", "structured_result", "error", "error_code", "limitations", "audit", "provider", "experimental"):
         if key in result:
             entry[key] = result[key]
     append_history(entry)
     return entry
+
+
+def submit_analysis_job(image_path: Path, original_path: Path | None, filename: str,
+                        original_filename: str | None, *, use_llm: bool, provider: str | None,
+                        model: str | None, history_id: str | None = None) -> str:
+    def operation(cancelled):
+        result = analyze_image(image_path, original_path, use_llm=use_llm,
+                               agent_provider=provider, model=model, cancelled=cancelled)
+        if not cancelled():
+            entry = record_analysis(result, image_path, original_path, filename, original_filename,
+                                    history_id=history_id)
+            result["history_item"] = entry
+        return result
+
+    return get_job_queue().submit(operation)
 
 
 def json_response(handler: BaseHTTPRequestHandler, status: HTTPStatus, payload: dict[str, Any]) -> None:
@@ -1521,6 +1549,35 @@ class PeritoHandler(BaseHTTPRequestHandler):
             job = get_job_queue().cancel(self.path.split("/")[2])
             json_response(self, HTTPStatus.OK if job else HTTPStatus.NOT_FOUND, job or {"error": "Analise nao encontrada."})
             return
+        retry_match = re.fullmatch(r"/analyses/([a-f0-9]{32})/retry", self.path)
+        if retry_match:
+            previous = next((item for item in load_history() if item.get("id") == retry_match.group(1)), None)
+            if not previous:
+                json_response(self, HTTPStatus.NOT_FOUND, {"error": "Analise nao encontrada no historico."})
+                return
+            if previous.get("status") != "nao_concluida":
+                json_response(self, HTTPStatus.CONFLICT, {"error": "Somente analises nao concluidas podem ser repetidas."})
+                return
+            image_path = UPLOAD_DIR / Path(str(previous.get("stored_filename") or "")).name
+            original_name = previous.get("original_stored_filename")
+            original_path = UPLOAD_DIR / Path(str(original_name)).name if original_name else None
+            if not image_path.is_file() or image_path.suffix.lower() not in ALLOWED_EXTENSIONS or (
+                original_path is not None and not original_path.is_file()
+            ):
+                json_response(self, HTTPStatus.GONE, {"error": "Os arquivos desta analise nao estao mais disponiveis."})
+                return
+            try:
+                identifier = submit_analysis_job(
+                    image_path, original_path, str(previous.get("filename") or image_path.name),
+                    previous.get("original_filename"), use_llm=True,
+                    provider=previous.get("provider"), model=previous.get("model"),
+                    history_id=uuid.uuid4().hex,
+                )
+            except QueueFull as exc:
+                json_response(self, HTTPStatus.TOO_MANY_REQUESTS, {"error": str(exc)})
+                return
+            json_response(self, HTTPStatus.ACCEPTED, {"job_id": identifier, "state": "aguardando"})
+            return
         if self.path not in {"/analyze", "/calibrate"}:
             self.send_error(HTTPStatus.NOT_FOUND, "Endpoint nao encontrado")
             return
@@ -1671,15 +1728,9 @@ class PeritoHandler(BaseHTTPRequestHandler):
         if self.path == "/analyze":
             filename = Path(field.filename).name
             original_filename = Path(original_field.filename).name if original_path else None
-            def operation(cancelled):
-                result = analyze_image(image_path, original_path, use_llm=use_llm,
-                                       agent_provider=agent_provider, model=model, cancelled=cancelled)
-                if not cancelled():
-                    entry = record_analysis(result, image_path, original_path, filename, original_filename)
-                    result["history_item"] = entry
-                return result
             try:
-                identifier = get_job_queue().submit(operation)
+                identifier = submit_analysis_job(image_path, original_path, filename, original_filename,
+                                                 use_llm=use_llm, provider=agent_provider, model=model)
             except QueueFull as exc:
                 image_path.unlink(missing_ok=True)
                 if original_path:

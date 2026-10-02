@@ -1,4 +1,4 @@
-from app.ai.schemas import IntegrityAnalysis, LocalEvidence, Verdict, validate_references
+from app.ai.schemas import ConclusionType, IntegrityAnalysis, LocalEvidence, QualityIssueType, Verdict, validate_references
 
 
 LOCAL_FAMILIES = {"compressao", "textura", "sobreposicao", "comparacao"}
@@ -9,8 +9,22 @@ def audit_analysis(analysis: IntegrityAnalysis, evidence: LocalEvidence, *, revi
     records = {record.id: record for record in evidence.records}
     anomalous = {r.family for r in evidence.records if r.status == "disponivel" and r.signal == "anomalia" and r.family in LOCAL_FAMILIES}
     reasons = []
-    if evidence.quality in {"insuficiente", "desconhecida"}:
-        reasons.append("Qualidade insuficiente ou desconhecida para conclusao confiavel.")
+    impossible = analysis.conclusion_type == ConclusionType.IMPOSSIVEL_AVALIAR
+    computational_blockers = {
+        QualityIssueType.DESFOQUE_EXTREMO,
+        QualityIssueType.RESOLUCAO_INSUFICIENTE,
+    }
+    has_computational_blocker = any(issue.tipo in computational_blockers for issue in analysis.problemas_qualidade)
+    has_visual_blocker = any(issue.fonte == "visual" for issue in analysis.problemas_qualidade)
+    valid_impossible = impossible and bool(analysis.problemas_qualidade) and (
+        has_visual_blocker or (has_computational_blocker and evidence.quality == "insuficiente")
+    )
+    if impossible and not valid_impossible:
+        reasons.append("Impossivel de avaliar sem problema bloqueante de qualidade validado.")
+    if evidence.quality == "insuficiente" and not impossible:
+        reasons.append("Qualidade local insuficiente exige revisao da avaliabilidade.")
+    if evidence.quality == "desconhecida":
+        reasons.append("Qualidade desconhecida; isso nao autoriza classificar a imagem como impossivel de avaliar.")
     if any(records[key].status != "disponivel" for key in ("ela", "ruido", "nitidez")):
         reasons.append("Extracao de evidencias essenciais incompleta.")
 
@@ -43,14 +57,16 @@ def audit_analysis(analysis: IntegrityAnalysis, evidence: LocalEvidence, *, revi
 
     invalidated = bool(reasons)
     verdict = Verdict.INDETERMINADO if invalidated else analysis.veredito
+    conclusion_type = ConclusionType.INCONCLUSIVA if invalidated else analysis.conclusion_type
     return {
         "status": "conflito" if invalidated else "validada",
         "reasons": reasons,
-        "requires_review": not reviewed and (invalidated or analysis.requer_auditoria),
+        "requires_review": not reviewed and (invalidated or analysis.requer_auditoria or impossible),
         "suspeita_ia": ai_verdict or (len(anomalous) >= 2 and detector_high),
         "support_families": sorted(supported),
         "anomalous_families": sorted(anomalous),
         "verdict": verdict.value,
-        "confidence": None if invalidated else analysis.confidence,
+        "conclusion_type": conclusion_type.value,
+        "confidence": None if invalidated or conclusion_type != ConclusionType.CLASSIFICADA else analysis.confidence,
         "confidence_kind": "declarada_pelo_modelo_nao_calibrada",
     }

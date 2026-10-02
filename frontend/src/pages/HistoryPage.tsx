@@ -6,7 +6,7 @@ import type { HistoryItem } from '../types';
 
 const tabs = [
   ['all', 'Todas'], ['modified', 'Alteradas / IA'], ['real', 'Reais'],
-  ['inconclusive', 'Inconclusivas'], ['calibration', 'Calibração'],
+  ['inconclusive', 'Inconclusivas'], ['impossible', 'Impossíveis'], ['failed', 'Falhas'], ['calibration', 'Calibração'],
 ] as const;
 
 const labels: Record<string, string> = {
@@ -25,6 +25,7 @@ function historyTone(item: HistoryItem) {
 
 function itemTitle(item: HistoryItem) {
   if (item.status === 'nao_concluida') return 'Falha de execução';
+  if (item.conclusion_type === 'impossivel_avaliar') return 'Impossível de avaliar';
   const verdict = labels[String(item.verdict)] || item.verdict || 'Sem conclusão';
   return item.status === 'experimental' || item.experimental ? `Teste experimental: ${verdict}` : verdict;
 }

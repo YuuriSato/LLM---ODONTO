@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, Files, WandSparkles } from 'lucide-react';
+import { AlertTriangle, Ban, CheckCircle2, Files, WandSparkles, XCircle } from 'lucide-react';
 import { AgentList } from '../components/AgentList';
 import { PageHeader } from '../components/PageHeader';
 import { useHistory } from '../hooks/useHistory';
@@ -11,7 +11,9 @@ export function DashboardPage({ agents, agentsLoading }: { agents: Agent[]; agen
     { id: 'dashTotal', label: 'Total de análises', value: data.pagination.total_all, detail: 'Registros armazenados localmente', icon: Files },
     { id: 'dashModified', label: 'Alterações ou IA', value: counts.modified || 0, detail: 'Resultados com sinais de alteração', icon: WandSparkles },
     { id: 'dashReal', label: 'Sem alteração detectada', value: counts.real || 0, detail: 'Resultados classificados como reais', icon: CheckCircle2 },
-    { id: 'dashInconclusive', label: 'Inconclusivas', value: counts.inconclusive || 0, detail: 'Qualidade ou evidências insuficientes', icon: AlertTriangle },
+    { id: 'dashInconclusive', label: 'Inconclusivas', value: counts.inconclusive || 0, detail: 'Evidências não distinguem as hipóteses', icon: AlertTriangle },
+    { id: 'dashImpossible', label: 'Impossíveis de avaliar', value: counts.impossible || 0, detail: 'Qualidade impediu uma análise útil', icon: Ban },
+    { id: 'dashFailed', label: 'Não concluídas', value: counts.failed || 0, detail: 'Falhas técnicas que podem ser repetidas', icon: XCircle },
   ];
   return (
     <div className="page" data-page-panel="dashboard">

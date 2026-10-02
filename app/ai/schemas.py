@@ -18,6 +18,19 @@ class Verdict(str, Enum):
     INDETERMINADO = "INDETERMINADO"
 
 
+class ConclusionType(str, Enum):
+    CLASSIFICADA = "classificada"
+    INCONCLUSIVA = "inconclusiva"
+    IMPOSSIVEL_AVALIAR = "impossivel_avaliar"
+
+
+class QualityIssueType(str, Enum):
+    DESFOQUE_EXTREMO = "desfoque_extremo"
+    RESOLUCAO_INSUFICIENTE = "resolucao_insuficiente"
+    EXPOSICAO_INADEQUADA = "exposicao_inadequada"
+    REGIAO_INTERESSE_ENCOBERTA = "regiao_interesse_encoberta"
+
+
 EvidenceStatus = Literal["disponivel", "ausente", "nao_aplicavel", "falhou", "desativado"]
 
 
@@ -70,6 +83,13 @@ class Claim(StrictModel):
     referencias: list[EvidenceReference]
 
 
+class QualityIssue(StrictModel):
+    tipo: QualityIssueType
+    descricao: str = Field(min_length=1)
+    fonte: Literal["visual", "computacional"]
+    referencias: list[EvidenceReference]
+
+
 class Interpretation(StrictModel):
     status: EvidenceStatus
     interpretacao: str
@@ -97,6 +117,7 @@ class ForensicAnalysis(StrictModel):
 
 
 class IntegrityAnalysis(StrictModel):
+    conclusion_type: ConclusionType
     veredito: Verdict
     confidence: float = Field(ge=0, le=1)
     modalidade: Literal["INTRAORAL", "RADIOGRAFIA", "PANORAMICA", "TOMOGRAFIA", "OUTRA"]
@@ -105,6 +126,7 @@ class IntegrityAnalysis(StrictModel):
     analise_forense: ForensicAnalysis
     evidencias_favoraveis: list[Claim]
     evidencias_contrarias: list[Claim]
+    problemas_qualidade: list[QualityIssue]
     limitacoes: list[str]
     requer_auditoria: bool
 
@@ -145,3 +167,35 @@ def validate_references(analysis: IntegrityAnalysis, evidence: LocalEvidence) ->
             raise ValueError("Observacao visual nao deve simular medicao computacional.")
         for ref in claim.referencias:
             check(ref)
+
+    computational_quality = {
+        QualityIssueType.DESFOQUE_EXTREMO: {"nitidez"},
+        QualityIssueType.RESOLUCAO_INSUFICIENTE: {"dimensoes"},
+    }
+    visual_quality = {
+        QualityIssueType.EXPOSICAO_INADEQUADA,
+        QualityIssueType.REGIAO_INTERESSE_ENCOBERTA,
+    }
+    for issue in analysis.problemas_qualidade:
+        if re.search(r"\d", issue.descricao):
+            raise ValueError("Problemas de qualidade devem citar valores por referencias, nao no texto livre.")
+        if issue.fonte == "computacional":
+            allowed = computational_quality.get(issue.tipo)
+            if not allowed or not issue.referencias:
+                raise ValueError("Problema computacional de qualidade sem suporte permitido.")
+            if any(ref.evidence_id not in allowed for ref in issue.referencias):
+                raise ValueError("Problema de qualidade referencia uma metrica incompatível.")
+        else:
+            if issue.tipo not in visual_quality or issue.referencias:
+                raise ValueError("Problema visual de qualidade nao deve simular medicao computacional.")
+        for ref in issue.referencias:
+            check(ref)
+
+    if analysis.conclusion_type == ConclusionType.CLASSIFICADA and analysis.veredito == Verdict.INDETERMINADO:
+        raise ValueError("Conclusao classificada exige um veredito definido.")
+    if analysis.conclusion_type != ConclusionType.CLASSIFICADA and analysis.veredito != Verdict.INDETERMINADO:
+        raise ValueError("Conclusao inconclusiva ou impossivel deve usar INDETERMINADO.")
+    if analysis.conclusion_type == ConclusionType.IMPOSSIVEL_AVALIAR and not analysis.problemas_qualidade:
+        raise ValueError("Impossivel de avaliar exige problemas bloqueantes de qualidade.")
+    if analysis.conclusion_type != ConclusionType.IMPOSSIVEL_AVALIAR and analysis.problemas_qualidade:
+        raise ValueError("Problemas bloqueantes so podem acompanhar Impossivel de avaliar.")

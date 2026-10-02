@@ -1,6 +1,8 @@
 import unittest
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 from app.ai import lmstudio_client as client
 from app import web_alteracao as web
@@ -53,6 +55,46 @@ class LMStudioTests(unittest.TestCase):
             self.assertEqual(len(images), 2)
             self.assertEqual(base64.b64decode(images[0].split(',')[1]), image.read_bytes())
             self.assertEqual(result.returned_model, 'medgemma')
+
+    def test_webp_is_converted_to_png_for_local_multimodal_request(self):
+        from tempfile import TemporaryDirectory
+        from PIL import Image
+        with TemporaryDirectory() as folder:
+            image = Path(folder) / 'image.webp'
+            Image.new('RGB', (16, 16), 'white').save(image)
+            data, mime = client.lmstudio_image_bytes(image)
+            self.assertEqual(mime, 'image/png')
+            self.assertTrue(data.startswith(b'\x89PNG'))
+
+    def test_grammar_engine_failure_retries_as_backend_validated_text(self):
+        from tempfile import TemporaryDirectory
+        from PIL import Image
+        from app.ai.config import AISettings
+        from app.ai.schemas import IntegrityAnalysis
+        error = HTTPError('http://local', 400, 'bad', {}, BytesIO(
+            b'{"error":"Unexpected empty grammar stack after accepting piece"}'))
+        response = {'model': 'medgemma', 'choices': [{'message': {'content': '{}'}, 'finish_reason': 'stop'}]}
+        with TemporaryDirectory() as folder:
+            image = Path(folder) / 'image.png'
+            Image.new('RGB', (16, 16), 'white').save(image)
+            with patch.object(client, 'discover_models', return_value=['medgemma']), patch.object(
+                client, 'request_json', side_effect=[error, response]
+            ) as request:
+                result = client.LMStudioClient(AISettings(provider='lmstudio', model='medgemma', development=True)).generate(
+                    'evidence', 'system', image, schema=IntegrityAnalysis
+                )
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(request.call_args.args[1]['response_format'], {'type': 'text'})
+        self.assertEqual(result.schema_mode, client.TEXT_SCHEMA_MODE)
+        self.assertTrue(result.cleanup_warnings)
+
+    def test_local_timeout_and_output_are_bounded_for_slow_inference(self):
+        from app.ai.config import AISettings
+        settings = AISettings(provider='lmstudio', model='medgemma', development=True, timeout_seconds=30)
+        with patch.dict('os.environ', {}, clear=True):
+            self.assertEqual(client.inference_timeout(settings), 300)
+        with patch.dict('os.environ', {'LM_STUDIO_TIMEOUT_SECONDS': '45'}):
+            self.assertEqual(client.inference_timeout(settings), 45)
 
     def test_local_pipeline_always_validates_and_audits(self):
         from tempfile import TemporaryDirectory

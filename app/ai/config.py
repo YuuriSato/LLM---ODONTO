@@ -5,8 +5,8 @@ from app.env_loader import load_project_env
 
 PRIMARY_MODEL = "gemini-flash-latest"
 SUPPORTED_MODELS = (PRIMARY_MODEL, "gemini-2.5-flash")
-SCHEMA_VERSION = "2.0"
-PROMPT_VERSION = "integrity-2.0"
+SCHEMA_VERSION = "2.1"
+PROMPT_VERSION = "integrity-2.1"
 
 
 @dataclass(frozen=True)

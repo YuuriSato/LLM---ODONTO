@@ -73,7 +73,7 @@ export function AnalyzePage({ models, selected, selectedValue, catalogLoading, c
             {statusText || (analysis.state === 'concluida' ? 'Análise concluída.' : '')}
           </div>
         </form>
-        {analysis.result ? <ResultPanel result={analysis.result} showFullEvidence={showFullEvidence} /> : (
+        {analysis.result ? <ResultPanel result={analysis.result} showFullEvidence={showFullEvidence} onRetry={() => void analysis.retry()} retrying={analysis.busy} /> : (
           <aside className="result-placeholder">
             <div><span>01</span><strong>Envie a imagem</strong><p>O arquivo é verificado e as evidências locais são preservadas.</p></div>
             <div><span>02</span><strong>Aguarde a análise</strong><p>As etapas exibidas refletem o estado informado pelo servidor.</p></div>
