@@ -9,6 +9,8 @@ from urllib.error import HTTPError, URLError
 
 from app.ai.config import AISettings
 from app.ai.gemini_client import Generation, ProviderError, image_bytes
+from app.ai.evidence_schema import SCHEMA_MODE, bound_integrity_schema
+from app.ai.schemas import IntegrityAnalysis, LocalEvidence
 
 
 def request_json(path: str, payload: dict | None = None, timeout: float = 3):
@@ -74,7 +76,8 @@ class LMStudioClient:
         self.settings = settings
 
     def generate(self, prompt: str, system: str, image: Path, reference: Path | None = None,
-                 schema: type | None = None, max_output_tokens: int | None = None) -> Generation:
+                 schema: type | None = None, max_output_tokens: int | None = None,
+                 evidence: LocalEvidence | None = None) -> Generation:
         settings = self.settings
         settings.validate()
         try:
@@ -92,16 +95,19 @@ class LMStudioClient:
             request = {"model": settings.model, "stream": False, "temperature": 0.1,
                        "max_tokens": max_output_tokens or settings.max_output_tokens,
                        "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}]}
+            bound = schema is IntegrityAnalysis and evidence is not None
             if schema:
                 request["response_format"] = {"type": "json_schema", "json_schema": {
-                    "name": "integrity_analysis", "strict": True, "schema": schema.model_json_schema(),
+                    "name": "integrity_analysis", "strict": True,
+                    "schema": bound_integrity_schema(evidence) if bound else schema.model_json_schema(),
                 }}
             response = request_json("/v1/chat/completions", request, settings.timeout_seconds)
             choice = response["choices"][0]
             text = choice["message"]["content"]
             if choice.get("finish_reason") != "stop" or not isinstance(text, str) or not text.strip():
                 raise ProviderError("LM Studio retornou resposta vazia ou incompleta.", "incomplete_response")
-            return Generation(text, settings.model, response.get("model"), "STOP", [])
+            return Generation(text, settings.model, response.get("model"), "STOP", [],
+                              schema_mode=SCHEMA_MODE if bound else "base")
         except ProviderError:
             raise
         except HTTPError as exc:

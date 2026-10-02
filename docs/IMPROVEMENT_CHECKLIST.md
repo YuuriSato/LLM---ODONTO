@@ -78,6 +78,25 @@ Nenhum item fica concluido somente porque existe uma implementacao ou um mock.
   chamado novamente nesta rodada: falta confirmacao da troca da chave exposta.
 - Verificacao Git passou: nenhum arquivo de runtime ou `.env` no indice atual.
 
+### Rodada 2026-09-27
+
+- 100 fotos de pacientes distintos importadas do AlphaDent com CRC, hash e
+  procedencia, sem atribuir REAL automaticamente. Total do manifesto: 103 imagens,
+  incluindo duas edicoes por IA para teste e uma geracao sintetica para calibracao.
+- Nova geracao feita pelo image_gen e registrada via API real de calibracao;
+  dez descritores locais salvos. Nao houve fine-tuning nem melhora comprovada.
+- Corrigida atribuicao automatica de REAL a referencias de comparacao. Uma
+  referencia sintetica ou desconhecida nao recebe um rotulo inventado.
+- Corrigida comparacao de hashes maiusculos/minusculos que permitia contornar
+  a separacao teste/calibracao. Bloqueio verificado por HTTP real e pelos CLIs.
+- 91 testes Python passaram, incluindo importacao parcial, hash divergente,
+  selecao por paciente, preservacao de revisao e calibracao de pares.
+- Interface: 25 combinacoes de pagina/largura passaram. Historico real com
+  98 registros, comparacao em 1440/390 px e exportacao JSON verificados novamente.
+- Calibracao ativa e manifesto inspecionados: zero hashes de teste sobrepostos.
+- LM Studio recusou a conexao; Gemini nao chamado sem confirmacao de rotacao da
+  chave exposta. As 100 fotos importadas continuam sem rotulo de integridade.
+
 ### Pendencias externas
 
 - Executar CI no GitHub quando estas mudancas forem publicadas; workflow ainda

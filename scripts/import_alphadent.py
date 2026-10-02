@@ -113,7 +113,7 @@ def merge_manifest(samples, root=DATASET_ROOT):
         manifest = load_manifest(path).model_dump(mode='json') if path.exists() else {'schema_version': '1.0', 'samples': []}
         existing = {sample['id']: sample for sample in manifest['samples']}
         calibration = root.parent / 'integrity_calibration.json'
-        calibrated = json.loads(calibration.read_text(encoding='utf-8-sig')) if calibration.exists() else {}
+        calibrated = {key.lower() for key in json.loads(calibration.read_text(encoding='utf-8-sig'))} if calibration.exists() else set()
         for sample in samples:
             if sample['sha256'] in calibrated:
                 raise ValueError('An imported image is already in calibration; review the split first.')

@@ -1,6 +1,8 @@
-# Perito Visual Local
+# Sato Company | Análise de Integridade
 
-Analise de integridade de imagens odontologicas, sem diagnostico clinico.
+Análise de imagens odontológicas para verificação de integridade, sem diagnóstico
+clínico. A interface usa React, TypeScript e Vite; o backend e o pipeline de IA
+continuam em Python.
 
 Fluxo de producao: imagem original -> pericia local -> local_evidence.json ->
 Gemini Flash Latest -> auditoria no backend -> veredito final.
@@ -40,11 +42,13 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 ```
 
-Instale as dependencias:
+Instale as dependências Python e do frontend:
 
 ```powershell
 python -m pip install --upgrade pip
 pip install -r requirements.lock.txt
+npm ci
+npm run build
 ```
 
 Use .env.example como referencia e preencha .env, que e ignorado pelo Git:
@@ -65,7 +69,7 @@ GEMINI_FALLBACK_MODELS. Se houver 404, a analise fica nao_concluida, com as
 evidencias preservadas. Listar modelos ou validar a chave nao confirma que a
 conta consegue executar esse modelo.
 
-Suba o web service:
+Suba o web service. O backend servirá a versão compilada do React no mesmo endereço:
 
 ```powershell
 python .\app\web_alteracao.py
@@ -74,7 +78,7 @@ python .\app\web_alteracao.py
 Abra no navegador:
 
 ```text
-http://localhost:9090
+http://127.0.0.1:9090
 ```
 
 Se quiser testar em outra porta, altere `WEB_PORT` no `.env` e reinicie o
@@ -92,9 +96,41 @@ Na tela, envie a imagem a analisar e, se disponivel, uma imagem de referencia.
 O pipeline completo roda sempre em producao, independentemente do score ou
 da existencia de uma calibracao anterior.
 
+## Interface React
+
+O código da interface fica em `frontend/src`, separado em `components`, `pages`,
+`hooks` e `api`. Os comandos disponíveis são:
+
+```powershell
+npm run dev        # servidor Vite para desenvolvimento
+npm run typecheck  # verificação TypeScript
+npm run build      # gera frontend/dist para o backend Python
+npm run test:ui    # build e teste de navegador
+```
+
+Para desenvolvimento com atualização automática, use dois terminais.
+
+Terminal 1:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python .\app\web_alteracao.py
+```
+
+Terminal 2:
+
+```powershell
+npm run dev
+```
+
+Abra `http://127.0.0.1:5173`. O Vite encaminha somente as rotas conhecidas ao
+backend em `127.0.0.1:9090` e ajusta `Host` e `Origin` para os valores locais
+esperados. As verificações de origem do backend permanecem ativas.
+
 ## Arquitetura de integridade
 
-- app/static/: HTML, CSS e JavaScript, separados do servidor.
+- frontend/src/: aplicação React, componentes, páginas, hooks e cliente das APIs.
+- frontend/dist/: build local servido pelo Python; não é versionado.
 - app/history_store.py: SQLite e importacao unica do historico JSON legado.
 - app/uploads.py: verificacao de formato real, integridade, bytes e pixels.
 - app/jobs.py: fila de uma analise por vez, limite de oito trabalhos ativos.
@@ -119,7 +155,7 @@ Para LM Studio, configure `APP_ENV=development` e
 e clique em Atualizar modelos. Modelos de embeddings e modelos sem visao nao
 entram no seletor. O resultado local e experimental, mas passa pelo mesmo schema,
 verificacao de referencias e auditoria do Gemini. Nao ha reducao da imagem nesse
-pipeline. Settings mostra capacidades e a ultima verificacao real, quando existir.
+pipeline. Configurações mostra capacidades e a última verificação real, quando existir.
 
 A interface usa `POST /analyze` com `Prefer: respond-async`, consulta
 `GET /jobs/<id>` e cancela por `POST /jobs/<id>/cancel`. Clientes antigos podem
@@ -236,7 +272,7 @@ runtime/integrity_calibration.json
 
 Cada tentativa tem identificador proprio. O arquivo de evidencias e salvo antes
 de chamar a IA e o resultado preserva todas as evidencias e respostas recebidas.
-A tela mostra um resumo; Settings permite consultar os dados completos.
+A tela mostra um resumo; Configurações permite consultar os dados completos.
 O historico e paginado, sem descarte automatico aos 100 registros. Os artefatos
 completos permanecem nas pastas individuais ate uma retencao explicita.
 
@@ -253,26 +289,28 @@ controle de acesso aos uploads, historico e artefatos.
 
 ## Desenvolvimento e testes
 
-Com APP_ENV=development, Settings libera teste local e selecao experimental
+Com APP_ENV=development, Configurações libera teste local e seleção experimental
 de provedor. /calibrate retorna 403 em producao, e requisicoes de outro provedor
 tambem sao bloqueadas pelo backend. A interface marca resultados experimentais.
 
 ```powershell
-.\\.venv\\Scripts\\python.exe -m unittest discover -s tests -p "test_*.py" -v
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v
+npm run typecheck
+npm run build
 ```
 
 Testes de interface (Node.js necessario, sem inferencia real):
 
 ```powershell
-npm install --no-save --package-lock=false playwright@1.62.1
+npm ci
 npx playwright install chromium
-$env:TEST_PYTHON = (Resolve-Path .\.venv\Scripts\python.exe).Path
-node tests/ui_smoke.cjs
+npm run test:ui
 ```
 
-O teste abre um servidor temporario com dados sinteticos, encerra-o ao terminar
-e nao modifica seu historico. Cobre cinco larguras, comparacao, download JSON,
-seletor indisponivel, retomada sem reenvio e cancelamento. Para uma verificacao
+O teste abre um servidor temporário com dados sintéticos, encerra-o ao terminar
+e não modifica seu histórico. Cobre cinco larguras, navegação por teclado,
+comparação, download JSON, seletor indisponível, retomada sem reenvio,
+cancelamento e ausência de erros no console. Para uma verificação
 somente de leitura com pares existentes no servico local, execute
 `node tests/ui_live_history.cjs`; esse teste exige um par salvo e um resultado
 exportavel. Screenshots ficam em `logs/`, fora do Git.
@@ -365,6 +403,11 @@ Executar direto com uma pasta de imagens:
 ```
 
 ## Dataset
+
+Para a base versionada por hashes, importacao de fotos intraorais e separacao
+entre calibracao e teste, veja [Base de integridade](docs/DATASET_INTEGRITY.md).
+Os comandos abaixo pertencem ao treino legado experimental, nao ao pipeline
+estruturado atual. Rotulos de pastas nao comprovam autenticidade.
 
 Estrutura esperada:
 

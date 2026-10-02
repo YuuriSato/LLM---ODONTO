@@ -55,7 +55,8 @@ class IntegrityAnalyzer:
         for attempt in range(attempts):
             self.check_cancelled()
             try:
-                raw = self.client.generate(prompt, SYSTEM_PROMPT, image, reference, schema=IntegrityAnalysis)
+                raw = self.client.generate(prompt, SYSTEM_PROMPT, image, reference,
+                                           schema=IntegrityAnalysis, evidence=forensic_evidence)
             except ProviderError as exc:
                 self.calls.append({"phase": "review" if review_context else "initial", "attempt": attempt + 1,
                                    "error_code": exc.code, "error": str(exc), "prompt_version": PROMPT_VERSION})
