@@ -19,6 +19,7 @@ runtime/evaluations/
 runtime/datasets/
 runtime/provider_checks/
 runtime/backups/
+runtime/private_bundles/
 runtime/.*.lock
 runtime/*.log
 
