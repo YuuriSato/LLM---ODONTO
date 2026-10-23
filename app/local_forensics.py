@@ -10,6 +10,11 @@ from typing import Any
 import numpy as np
 from PIL import Image, ImageChops, ImageFilter, ImageOps
 
+# Engineering heuristics, not validated forensic cutoffs.
+QUALITY_MIN_SIDE = 320
+QUALITY_MIN_MEGAPIXELS = 0.18
+QUALITY_MIN_LAPLACIAN = 14
+
 
 VALID_LABELS = {
     "REAL",
@@ -309,11 +314,11 @@ def quality_assessment(metrics: dict[str, Any]) -> dict[str, Any]:
     sharpness_cv = float(metrics.get("sharpness_block_cv", 0.0))
     reasons: list[str] = []
 
-    if min_side < 320:
+    if min_side < QUALITY_MIN_SIDE:
         reasons.append("resolucao baixa: menor lado abaixo de 320 px")
-    if megapixels < 0.18:
+    if megapixels < QUALITY_MIN_MEGAPIXELS:
         reasons.append("resolucao baixa: menos de 0.18 megapixel")
-    if laplacian < 14:
+    if laplacian < QUALITY_MIN_LAPLACIAN:
         reasons.append("nitidez global muito baixa")
 
     if reasons:
@@ -329,7 +334,7 @@ def quality_assessment(metrics: dict[str, Any]) -> dict[str, Any]:
             reasons.append("nitidez muito desigual entre regioes")
         status = "limitada" if reasons else "boa"
 
-    if laplacian < 14:
+    if laplacian < QUALITY_MIN_LAPLACIAN:
         blur_level = "alto"
     elif laplacian < 35:
         blur_level = "moderado"

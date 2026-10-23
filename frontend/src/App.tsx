@@ -27,6 +27,7 @@ export function App() {
           selectedValue={models.selectedValue}
           catalogLoading={models.loading}
           catalogError={models.error}
+          localModelStatus={models.catalog?.lmstudio_status || ''}
           setSelectedValue={models.setSelectedValue}
           refreshModels={models.refresh}
           showFullEvidence={showFullEvidence}

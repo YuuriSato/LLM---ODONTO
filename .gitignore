@@ -1,4 +1,8 @@
 .venv/
+.venv-neural/
+obsidian/Privado/
+obsidian/.obsidian/workspace*.json
+obsidian/Gerado/
 node_modules/
 frontend/dist/
 __pycache__/
@@ -16,6 +20,7 @@ runtime/datasets/
 runtime/provider_checks/
 runtime/backups/
 runtime/.*.lock
+runtime/*.log
 
 .env
 .DS_Store
