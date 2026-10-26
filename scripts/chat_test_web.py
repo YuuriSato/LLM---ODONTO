@@ -99,7 +99,7 @@ def make_handler(base_url: str, api_key: str):
             self.wfile.write(body)
 
         def remote(self, path: str, payload: dict | None = None) -> dict:
-            headers = {"Authorization": "Bearer " + api_key}
+            headers = {"Authorization": "Bearer " + api_key, "User-Agent": "LM-Odonto-Chat-Test/1.0"}
             if payload is not None:
                 headers["Content-Type"] = "application/json"
             request = Request(

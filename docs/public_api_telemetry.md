@@ -9,8 +9,8 @@ Exemplo no PowerShell, na raiz do projeto, sem mostrar a chave:
 ```powershell
 $apiKey = (Get-Content -LiteralPath 'runtime/private_bundles/medgemma_public_api.key' -Raw).Trim()
 Invoke-RestMethod `
-  -Uri 'https://opens-automobile-delhi-painted.trycloudflare.com/v1/telemetry' `
+  -Uri 'https://observability-okta7.okta7.workers.dev/v1/telemetry' `
   -Headers @{ Authorization = "Bearer $apiKey" }
 ```
 
-O Quick Tunnel usa uma URL temporária. Após mudar a URL, atualize o endereço na ferramenta. É necessário reiniciar o processo `scripts.public_model_gateway` para ativar este endpoint; os eventos anteriores ao reinício não estarão disponíveis.
+O Worker oferece um endereço fixo para a ferramenta, mas sua origem atual ainda é um Quick Tunnel temporário. Se o túnel do modelo mudar, atualize o binding `MODEL_ORIGIN` do Worker. É necessário reiniciar o processo `scripts.public_model_gateway` para ativar este endpoint; os eventos anteriores ao reinício não estarão disponíveis.

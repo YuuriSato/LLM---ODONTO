@@ -79,6 +79,19 @@ class ChatPageTests(unittest.TestCase):
         self.send([self.image_message("PNG", "image/jpeg")])
         self.assertEqual(self.responses[0][0], 400)
 
+    def test_remote_request_identifies_client_on_workers_dev(self):
+        captured = []
+        class FakeResponse:
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+            def read(self, *_args): return b'{"data": []}'
+        def fake_urlopen(request, timeout):
+            captured.append(request)
+            return FakeResponse()
+        with patch("scripts.chat_test_web.urlopen", side_effect=fake_urlopen):
+            self.handler.remote("/models")
+        self.assertEqual(captured[0].get_header("User-agent"), "LM-Odonto-Chat-Test/1.0")
+
 
 if __name__ == "__main__":
     unittest.main()
