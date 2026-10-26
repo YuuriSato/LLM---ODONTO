@@ -71,6 +71,13 @@
       return item;
     }
     async function checkStatus() {
+      if (location.protocol === 'file:') {
+        status.textContent = 'Abra pelo servidor local';
+        status.className = 'status offline';
+        error.textContent = 'Esta página precisa ser aberta em http://127.0.0.1:8766/ após iniciar o servidor de teste.';
+        send.disabled = true;
+        return;
+      }
       try {
         const response = await fetch('/status');
         if (!response.ok) throw new Error('offline');
