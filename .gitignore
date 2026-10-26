@@ -1,5 +1,6 @@
 .venv/
 .venv-neural/
+.venv-finetune/
 obsidian/Privado/
 obsidian/.obsidian/workspace*.json
 obsidian/Gerado/
@@ -20,6 +21,7 @@ runtime/datasets/
 runtime/provider_checks/
 runtime/backups/
 runtime/private_bundles/
+runtime/dashboard-training.json
 runtime/.*.lock
 runtime/*.log
 
