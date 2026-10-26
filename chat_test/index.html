@@ -42,11 +42,11 @@
 <body>
   <div class="shell">
     <header>
-      <div><h1>MedGemma Dental LoRA</h1><p>Chat de teste pela API pública temporária</p></div>
+      <div><h1>MedGemma Dental LoRA</h1><p>Chat de teste pela API no Cloudflare Worker</p></div>
       <span id="status" class="status" aria-live="polite">Verificando…</span>
     </header>
     <main id="messages" aria-live="polite">
-      <div id="intro" class="intro"><strong>Comece uma conversa</strong>As mensagens passam pelo Quick Tunnel até o modelo nesta máquina. O modelo é experimental e suas respostas ainda não foram validadas.</div>
+      <div id="intro" class="intro"><strong>Comece uma conversa</strong>As mensagens passam pelo Worker e pelo Quick Tunnel até o modelo nesta máquina. O modelo é experimental e suas respostas ainda não foram validadas.</div>
     </main>
     <p id="error" class="error" role="alert"></p>
     <footer>
