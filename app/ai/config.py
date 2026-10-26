@@ -36,9 +36,11 @@ class AISettings:
 
 def get_settings() -> AISettings:
     load_project_env()
+    provider = os.environ.get("AI_PROVIDER", os.environ.get("LLM_PROVIDER", "gemini")).strip().lower()
     return AISettings(
-        provider=os.environ.get("AI_PROVIDER", os.environ.get("LLM_PROVIDER", "gemini")).strip().lower(),
-        model=os.environ.get("GEMINI_MODEL", PRIMARY_MODEL).strip(),
+        provider=provider,
+        model=(os.environ.get("LM_STUDIO_MODEL", "") if provider == "lmstudio"
+               else os.environ.get("GEMINI_MODEL", PRIMARY_MODEL)).strip(),
         api_key=os.environ.get("GEMINI_API_KEY", ""),
         development=os.environ.get("APP_ENV", "production").lower() == "development",
         timeout_seconds=max(1, int(os.environ.get("AI_TIMEOUT_SECONDS", "90"))),

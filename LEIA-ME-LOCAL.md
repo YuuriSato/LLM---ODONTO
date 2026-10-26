@@ -32,6 +32,14 @@ Depois das alterações, `npm run build` atualiza a versão servida na porta 909
 
 O `.env` local usa `APP_ENV=development`. Para análise com Gemini, preencha `GEMINI_API_KEY` no `.env`. A interface pode abrir sem a chave; a análise remota depende dela. Para modelos locais, configure o LM Studio conforme o README original.
 
+Para usar o GGUF dental treinado no Sato Company, mantenha no `.env` local `AI_PROVIDER=lmstudio` e `LM_STUDIO_MODEL=medgemma-dental-lora-1.5`. O modelo importado no LM Studio precisa incluir `medgemma-dental-Q4_K_M.gguf` e `mmproj-medgemma-dental-f16.gguf`. Carregue com contexto suficiente para o schema da aplicação:
+
+```powershell
+lms load medgemma-dental-lora-1.5 --context-length 8192 --parallel 1 --identifier medgemma-dental-lora-1.5 --yes
+```
+
+Se o modelo já estiver carregado com 4096 tokens, descarregue-o com `lms unload medgemma-dental-lora-1.5` antes desse comando. O teste sintético `scripts/provider_check.py --provider lmstudio --model medgemma-dental-lora-1.5` confirmou apenas transporte, schema e auditoria; não valida a precisão da classificação.
+
 O backend pode estar em segundo plano. Para encerrá-lo, aguarde as análises terminarem e execute `./parar-local.ps1`. O script confere se o processo da porta 9090 pertence a este projeto antes de encerrá-lo. Depois inicie pelo script acima. Logs ficam em `logs/local-backend.*.log`.
 
 O Vite foi atualizado para 8.3.5, com lockfile atualizado; a auditoria npm não apontou vulnerabilidades após essa atualização. Build e testes de interface foram executados.
