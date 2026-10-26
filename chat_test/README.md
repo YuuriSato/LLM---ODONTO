@@ -11,6 +11,8 @@ Mantenha o LM Studio, o gateway na porta 8765 e o Quick Tunnel ligados. No Power
   --port 8766
 ```
 
-Abra `http://127.0.0.1:8766/`. O servidor escuta apenas no loopback desta máquina. O chat é somente texto, mantém o histórico na memória da página e não grava as mensagens. Se a URL temporária mudar, reinicie o servidor com a nova Base URL.
+Abra `http://127.0.0.1:8766/`. O servidor escuta apenas no loopback desta máquina. O chat aceita texto e uma imagem PNG, JPEG ou WebP de até 5 MB por conversa. A imagem é enviada à API como `image_url` em base64; WebP é convertido para PNG no servidor local. O histórico permanece na memória da página e não é gravado em disco. Use **Nova conversa** para trocar de imagem. Se a URL temporária mudar, reinicie o servidor com a nova Base URL.
+
+Após atualizar o código, interrompa o servidor anterior com `Ctrl+C`, execute o comando acima novamente e recarregue a página.
 
 O modelo ainda é experimental: a interface demonstra conectividade, não precisão ou segurança clínica.
