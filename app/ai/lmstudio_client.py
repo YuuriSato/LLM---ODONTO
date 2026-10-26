@@ -21,6 +21,7 @@ LOCAL_CONCISE_PROMPT = """
 Para caber no limite do modelo local, seja extremamente conciso: use no maximo
 duas observacoes curtas por lista e uma frase curta por interpretacao. Nao repita
 metricas no texto; mantenha-as apenas nas referencias estruturadas.
+Use frases completas. Resuma em vez de interromper uma frase no meio.
 """
 
 
@@ -35,7 +36,7 @@ def lmstudio_image_bytes(path: Path) -> tuple[bytes, str]:
 
 
 def request_json(path: str, payload: dict | None = None, timeout: float = 3):
-    host = os.environ.get("LM_STUDIO_HOST", "http://127.0.0.1:11345").rstrip("/")
+    host = os.environ.get("LM_STUDIO_HOST", "http://127.0.0.1:1234").rstrip("/")
     headers = {"Content-Type": "application/json"}
     token = os.environ.get("LM_STUDIO_API_KEY", "")
     if token:
@@ -75,7 +76,7 @@ def model_descriptors() -> list[dict]:
         for instance in loaded or [{"id": model.get("key", "")}]:
             result.append({"provider": "lmstudio", "model": instance["id"],
                            "vision": model.get("capabilities", {}).get("vision"),
-                           "loaded": bool(loaded), "server": os.environ.get("LM_STUDIO_HOST", "http://127.0.0.1:11345"),
+                           "loaded": bool(loaded), "server": os.environ.get("LM_STUDIO_HOST", "http://127.0.0.1:1234"),
                            "context_length": instance.get("config", {}).get("context_length")})
     return result
 
@@ -125,7 +126,7 @@ class LMStudioClient:
                 ])
             request = {"model": settings.model, "stream": False, "temperature": 0.1,
                        "max_tokens": output_token_limit(settings, max_output_tokens),
-                       "messages": [{"role": "system", "content": system + LOCAL_CONCISE_PROMPT},
+                       "messages": [{"role": "system", "content": system + (LOCAL_CONCISE_PROMPT if schema is IntegrityAnalysis else '')},
                                     {"role": "user", "content": content}]}
             bound = schema is IntegrityAnalysis and evidence is not None
             if schema:

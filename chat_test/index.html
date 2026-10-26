@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chat de teste · MedGemma Dental LoRA</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, Segoe UI, system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: #0a0f17; color: #edf3fa; }
+    .shell { width: min(900px, 100%); min-height: 100vh; margin: auto; display: flex; flex-direction: column; border-inline: 1px solid #253040; background: #101722; }
+    header { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: 1.25rem 1.5rem; border-bottom: 1px solid #263242; }
+    h1 { margin: 0; font-size: 1.12rem; letter-spacing: .01em; }
+    header p { margin: .3rem 0 0; color: #9bb0c7; font-size: .86rem; }
+    .status { flex: none; border: 1px solid #3a4a5c; border-radius: 999px; padding: .38rem .7rem; color: #c1ccda; font-size: .78rem; }
+    .status.online { color: #8ce0b7; border-color: #286a50; }
+    .status.offline { color: #ffbdad; border-color: #825046; }
+    main { flex: 1; overflow-y: auto; padding: 1.5rem; display: flex; flex-direction: column; gap: 1rem; }
+    .intro { margin: auto; text-align: center; max-width: 460px; color: #a9bbcf; line-height: 1.5; }
+    .intro strong { display: block; color: #f0f5fc; font-size: 1.35rem; margin-bottom: .55rem; }
+    .message { max-width: min(78%, 660px); padding: .85rem 1rem; border: 1px solid #304154; border-radius: 16px; white-space: pre-wrap; line-height: 1.5; overflow-wrap: anywhere; }
+    .message.user { align-self: flex-end; background: #553012; border-color: #9a5114; }
+    .message.assistant { align-self: flex-start; background: #192536; }
+    .message.pending { color: #adbed2; font-style: italic; }
+    .message img { display: block; width: min(100%, 320px); max-height: 320px; object-fit: contain; margin-top: .6rem; border-radius: 8px; }
+    .error { margin: 0 1.5rem; color: #ffb7ac; font-size: .88rem; min-height: 1.3rem; }
+    footer { padding: 1rem 1.5rem 1.25rem; border-top: 1px solid #263242; }
+    form { display: flex; align-items: end; gap: .7rem; }
+    textarea { flex: 1; resize: vertical; min-height: 52px; max-height: 180px; border-radius: 13px; border: 1px solid #42536a; background: #0b121c; color: #edf3fa; padding: .85rem 1rem; font: inherit; outline: none; }
+    textarea:focus { border-color: #ff8a1c; box-shadow: 0 0 0 2px #ff8a1c32; }
+    .attachment { display: flex; align-items: center; gap: .7rem; margin-top: .65rem; color: #a9bbcf; font-size: .82rem; }
+    .attachment input { max-width: min(100%, 330px); }
+    .attachment input::file-selector-button { border: 1px solid #48586b; border-radius: 8px; background: #1a2737; color: #dce8f5; padding: .5rem .7rem; margin-right: .6rem; cursor: pointer; }
+    .attachment img { max-width: 80px; max-height: 60px; border-radius: 6px; }
+    button { cursor: pointer; border-radius: 10px; border: 1px solid #ff8a1c; background: #ff8a1c; color: #17100a; font: inherit; font-weight: 650; padding: .8rem 1rem; }
+    button:disabled { cursor: wait; opacity: .55; }
+    .secondary { background: transparent; color: #adbed2; border-color: #48586b; font-weight: 500; padding: .5rem .7rem; }
+    .bottom { display: flex; justify-content: space-between; align-items: center; gap: .8rem; margin-top: .65rem; color: #8398af; font-size: .76rem; }
+    @media (max-width: 600px) { header, main, footer { padding-inline: 1rem; } .message { max-width: 92%; } .bottom { align-items: flex-start; } }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div><h1>MedGemma Dental LoRA</h1><p>Chat de teste pela API no Cloudflare Worker</p></div>
+      <span id="status" class="status" aria-live="polite">Verificando…</span>
+    </header>
+    <main id="messages" aria-live="polite">
+      <div id="intro" class="intro"><strong>Comece uma conversa</strong>As mensagens passam pelo Worker e pelo Quick Tunnel até o modelo nesta máquina. O modelo é experimental e suas respostas ainda não foram validadas.</div>
+    </main>
+    <p id="error" class="error" role="alert"></p>
+    <footer>
+      <form id="form">
+        <textarea id="input" aria-label="Mensagem" placeholder="Escreva sua mensagem…" maxlength="2000"></textarea>
+        <button id="send" type="submit">Enviar</button>
+      </form>
+      <div class="attachment"><input id="image" type="file" accept="image/png,image/jpeg,image/webp" aria-label="Anexar imagem"><img id="preview" alt="Prévia da imagem" hidden><span id="attachment-note">PNG, JPEG ou WebP · até 5 MB · uma imagem por conversa</span></div>
+      <div class="bottom"><span>Enter envia · Shift+Enter quebra a linha · sem streaming</span><button id="clear" class="secondary" type="button">Nova conversa</button></div>
+    </footer>
+  </div>
+  <script>
+    const list = document.getElementById('messages');
+    const intro = document.getElementById('intro');
+    const form = document.getElementById('form');
+    const input = document.getElementById('input');
+    const send = document.getElementById('send');
+    const image = document.getElementById('image');
+    const preview = document.getElementById('preview');
+    const error = document.getElementById('error');
+    const status = document.getElementById('status');
+    const history = [];
+    let previewUrl = null;
+    function readImage(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error('Não foi possível ler a imagem.'));
+        reader.readAsDataURL(file);
+      });
+    }
+    image.addEventListener('change', () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      const file = image.files[0];
+      preview.hidden = !file;
+      previewUrl = file ? URL.createObjectURL(file) : null;
+      preview.src = previewUrl || '';
+    });
+    function bubble(text, kind) {
+      intro.hidden = true;
+      const item = document.createElement('div');
+      item.className = 'message ' + kind;
+      item.textContent = text;
+      list.appendChild(item);
+      list.scrollTop = list.scrollHeight;
+      return item;
+    }
+    async function checkStatus() {
+      if (location.protocol === 'file:') {
+        status.textContent = 'Abra pelo servidor local';
+        status.className = 'status offline';
+        error.textContent = 'Esta página precisa ser aberta em http://127.0.0.1:8766/ após iniciar o servidor de teste.';
+        send.disabled = true;
+        return;
+      }
+      try {
+        const response = await fetch('/status');
+        if (!response.ok) throw new Error('offline');
+        status.textContent = 'API conectada';
+        status.className = 'status online';
+      } catch {
+        status.textContent = 'API indisponível';
+        status.className = 'status offline';
+      }
+    }
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const content = input.value.trim();
+      const file = image.files[0];
+      if ((!content && !file) || send.disabled) return;
+      if (file && (file.size > 5 * 1024 * 1024 || !['image/png', 'image/jpeg', 'image/webp'].includes(file.type))) {
+        error.textContent = 'Escolha uma imagem PNG, JPEG ou WebP de até 5 MB.';
+        return;
+      }
+      error.textContent = '';
+      send.disabled = true;
+      const text = content || 'Descreva o que vê nesta imagem.';
+      let userMessage;
+      let pending;
+      try {
+        const dataUrl = file ? await readImage(file) : null;
+        userMessage = bubble(text, 'user');
+        if (dataUrl) {
+          const thumbnail = document.createElement('img');
+          thumbnail.src = dataUrl;
+          thumbnail.alt = file.name;
+          userMessage.appendChild(thumbnail);
+        }
+        const message = dataUrl ? { role: 'user', content: [
+          { type: 'text', text },
+          { type: 'image_url', image_url: { url: dataUrl } }
+        ] } : { role: 'user', content: text };
+        if (history.length >= 12) history.splice(0, 2);
+        history.push(message);
+        pending = bubble('Aguardando resposta…', 'assistant pending');
+        const response = await fetch('/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: history }) });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Falha na requisição.');
+        pending.className = 'message assistant';
+        pending.textContent = result.content;
+        history.push({ role: 'assistant', content: result.content });
+        input.value = '';
+        if (file) { image.value = ''; image.disabled = true; preview.hidden = true; preview.src = ''; if (previewUrl) URL.revokeObjectURL(previewUrl); previewUrl = null; document.getElementById('attachment-note').textContent = 'Imagem enviada. Use Nova conversa para trocar.'; }
+        status.textContent = 'API conectada';
+        status.className = 'status online';
+      } catch (reason) {
+        pending?.remove();
+        userMessage?.remove();
+        if (userMessage) history.pop();
+        if (!history.length) intro.hidden = false;
+        error.textContent = reason.message || 'Não foi possível obter resposta.';
+        status.textContent = 'API indisponível';
+        status.className = 'status offline';
+      } finally {
+        send.disabled = false;
+        input.focus();
+      }
+    });
+    input.addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); form.requestSubmit(); } });
+    document.getElementById('clear').addEventListener('click', () => { history.length = 0; list.replaceChildren(intro); intro.hidden = false; error.textContent = ''; image.value = ''; image.disabled = false; preview.src = ''; preview.hidden = true; if (previewUrl) URL.revokeObjectURL(previewUrl); previewUrl = null; document.getElementById('attachment-note').textContent = 'PNG, JPEG ou WebP · até 5 MB · uma imagem por conversa'; input.focus(); });
+    checkStatus();
+  </script>
+</body>
+</html>

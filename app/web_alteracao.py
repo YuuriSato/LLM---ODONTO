@@ -23,7 +23,7 @@ from urllib.request import urlopen
 import ollama
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app.ai.config import SUPPORTED_MODELS, get_settings
+from app.ai.config import PRIMARY_MODEL, SUPPORTED_MODELS, get_settings
 from app.ai.gemini_client import GeminiClient
 from app.ai import lmstudio_client
 from app.history_store import HistoryStore
@@ -75,7 +75,7 @@ OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11435")
 MODEL = os.environ.get("VISION_MODEL", "codex-dental:latest")
 AI_SETTINGS = get_settings()
 LLM_PROVIDER = AI_SETTINGS.provider
-GEMINI_MODEL = AI_SETTINGS.model
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", PRIMARY_MODEL).strip()
 DEVELOPMENT_MODE = AI_SETTINGS.development
 HISTORY_LOCK = RLock()
 JOB_QUEUE = None
@@ -1444,6 +1444,8 @@ class PeritoHandler(BaseHTTPRequestHandler):
         if request_path == "/agents":
             agents = available_agents()
             preferred = LLM_PROVIDER if LLM_PROVIDER in {"gemini", "google", "gemini_flash", "ollama"} else "gemini"
+            if DEVELOPMENT_MODE and LLM_PROVIDER == "lmstudio":
+                preferred = "lmstudio"
             json_response(
                 self,
                 HTTPStatus.OK,
@@ -1451,7 +1453,7 @@ class PeritoHandler(BaseHTTPRequestHandler):
                     "default_provider": "gemini" if preferred in {"google", "gemini_flash"} else preferred,
                     "agents": agents,
                     **model_catalog(),
-                    "default_model": GEMINI_MODEL,
+                    "default_model": f"lmstudio:{AI_SETTINGS.model}" if preferred == "lmstudio" else GEMINI_MODEL,
                     "development_mode": DEVELOPMENT_MODE,
                 },
             )

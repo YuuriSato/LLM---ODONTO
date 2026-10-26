@@ -1,0 +1,6 @@
+datasets/*
+!datasets/.gitkeep
+runs/*
+!runs/.gitkeep
+exports/*
+!exports/.gitkeep

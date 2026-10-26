@@ -1,11 +1,12 @@
 import { RefreshCw } from 'lucide-react';
 import type { SelectedModel } from '../types';
 
-export function ModelSelector({ models, value, loading, error, onChange, onRefresh, disabled }: {
+export function ModelSelector({ models, value, loading, error, status, onChange, onRefresh, disabled }: {
   models: SelectedModel[];
   value: string;
   loading: boolean;
   error: string;
+  status?: string;
   onChange: (value: string) => void;
   onRefresh: () => Promise<void>;
   disabled?: boolean;
@@ -43,7 +44,7 @@ export function ModelSelector({ models, value, loading, error, onChange, onRefre
         </button>
       </div>
       <span id="modelStatus" className={`field-hint ${error || selected?.available === false ? 'error-text' : ''}`} role="status">
-        {error || (selected?.available === false ? 'O modelo selecionado está indisponível. Escolha outro ou atualize a lista.' : '')}
+        {error || (selected?.available === false ? 'O modelo selecionado está indisponível. Escolha outro ou atualize a lista.' : status || '')}
       </span>
     </div>
   );

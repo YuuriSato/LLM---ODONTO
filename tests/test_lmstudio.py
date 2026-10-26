@@ -118,7 +118,11 @@ class LMStudioTests(unittest.TestCase):
             'Consulte as referencias verificadas.',
         )
         quality = schema['$defs']['QualityIssue']['anyOf']
-        resolution = next(item for item in quality if item['properties']['tipo'].get('const') == 'resolucao_insuficiente')
+        self.assertFalse(any(item['properties']['tipo'].get('const') == 'resolucao_insuficiente' for item in quality))
+        low = sample_evidence()
+        next(record for record in low.records if record.id == 'dimensoes').values['image_min_side'] = 224
+        low_quality = bound_integrity_schema(low)['$defs']['QualityIssue']['anyOf']
+        resolution = next(item for item in low_quality if item['properties']['tipo'].get('const') == 'resolucao_insuficiente')
         self.assertEqual(resolution['properties']['fonte']['const'], 'computacional')
         self.assertEqual(resolution['properties']['referencias']['minItems'], 1)
         exposure = next(item for item in quality if item['properties']['tipo'].get('const') == 'exposicao_inadequada')

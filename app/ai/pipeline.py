@@ -9,6 +9,8 @@ from app.ai.evidence import collect_evidence
 from app.ai.gemini_client import GeminiClient, ProviderError
 from app.ai.integrity_analyzer import AnalysisValidationError, IntegrityAnalyzer
 from app.ai.lmstudio_client import LMStudioClient
+from app.ai.neural_detector import configured_neural_detector
+from app.ai.schemas import VisualIntake
 
 
 class AnalysisCancelled(RuntimeError):
@@ -32,6 +34,8 @@ def run_integrity_pipeline(image: Path, reference: Path | None = None, *, settin
     analysis_id = uuid.uuid4().hex
     folder = (cache_dir or Path(__file__).resolve().parents[2] / "runtime" / "analysis_cache") / analysis_id
     folder.mkdir(parents=True, exist_ok=False)
+    if detector is None:
+        detector = configured_neural_detector(settings.development)
     evidence = collect_evidence(image, analysis_id, reference, calibration, detector)
     save_json(folder / "local_evidence.json", evidence.model_dump(mode="json"))
     client = LMStudioClient(settings) if settings.provider == "lmstudio" else GeminiClient(settings)
@@ -54,7 +58,9 @@ def run_integrity_pipeline(image: Path, reference: Path | None = None, *, settin
         initial = analyzer.analyze_integrity(image, evidence, reference)
         check_cancelled()
         result["initial_analysis"] = initial.model_dump(mode="json")
-        audit = audit_analysis(initial, evidence)
+        intake = getattr(analyzer, 'visual_intake', None)
+        intake = intake if isinstance(intake, VisualIntake) else None
+        audit = audit_analysis(initial, evidence, visual_intake=intake)
         result["initial_audit"] = audit
         result["audit"] = audit
         result["audit_status"] = "executada"
@@ -65,7 +71,14 @@ def run_integrity_pipeline(image: Path, reference: Path | None = None, *, settin
             check_cancelled()
             result["reviewed_analysis"] = final.model_dump(mode="json")
             result["review_status"] = "executada"
-            audit = audit_analysis(final, evidence, reviewed=True)
+            audit = audit_analysis(final, evidence, reviewed=True, visual_intake=intake)
+        result['audit'] = audit
+        result['audit_evidence'] = audit['reasons']
+        if audit.get('consistency_conflicts'):
+            raise ProviderError(
+                'O modelo manteve contradições ou inferências de origem sem suporte após a revisão. Resposta não validada.',
+                'inconsistent_model_output',
+            )
         result.update(status="concluida", conclusion_type=audit["conclusion_type"],
                       verdict=audit["verdict"], confidence=audit["confidence"],
                       audit=audit, audit_evidence=audit["reasons"], audit_status="executada")
@@ -91,6 +104,8 @@ def run_integrity_pipeline(image: Path, reference: Path | None = None, *, settin
         result["report"] = "Analise nao concluida: " + str(exc)
         if result.get("review_status") == "solicitada":
             result["review_status"] = "falhou"
+    intake = getattr(analyzer, 'visual_intake', None)
+    result['visual_intake'] = intake.model_dump(mode='json') if isinstance(intake, VisualIntake) else None
     result["duration_seconds"] = f"{time.perf_counter() - started:.2f}"
     result["provider_calls"] = analyzer.calls
     save_json(folder / "result.json", result)

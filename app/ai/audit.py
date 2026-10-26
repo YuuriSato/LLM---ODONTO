@@ -1,14 +1,25 @@
 from app.ai.schemas import ConclusionType, IntegrityAnalysis, LocalEvidence, QualityIssueType, Verdict, validate_references
+from app.ai.consistency import quality_conflicts, modality_text_conflicts, unsupported_authenticity_claims
 
 
 LOCAL_FAMILIES = {"compressao", "textura", "sobreposicao", "comparacao"}
 
 
-def audit_analysis(analysis: IntegrityAnalysis, evidence: LocalEvidence, *, reviewed: bool = False) -> dict:
+def audit_analysis(analysis: IntegrityAnalysis, evidence: LocalEvidence, *, reviewed: bool = False, visual_intake=None) -> dict:
     validate_references(analysis, evidence)
     records = {record.id: record for record in evidence.records}
     anomalous = {r.family for r in evidence.records if r.status == "disponivel" and r.signal == "anomalia" and r.family in LOCAL_FAMILIES}
-    reasons = []
+    consistency = quality_conflicts(analysis, evidence)
+    visual_texts = [analysis.justificativa]
+    for values in analysis.analise_visual.model_dump().values():
+        visual_texts.extend(values)
+    consistency.extend(modality_text_conflicts(analysis.modalidade, visual_texts))
+    consistency.extend(unsupported_authenticity_claims(visual_texts + analysis.limitacoes + [
+        claim.descricao for claim in analysis.evidencias_favoraveis]))
+    if visual_intake is not None and visual_intake.modalidade != 'OUTRA' and analysis.modalidade != visual_intake.modalidade:
+        consistency.append({'code': 'modality_disagreement',
+                            'message': 'A modalidade diverge da identificacao visual preliminar. Confira a imagem e resolva a divergencia antes de concluir.'})
+    reasons = [item['message'] for item in consistency]
     impossible = analysis.conclusion_type == ConclusionType.IMPOSSIVEL_AVALIAR
     computational_blockers = {
         QualityIssueType.DESFOQUE_EXTREMO,
@@ -60,6 +71,7 @@ def audit_analysis(analysis: IntegrityAnalysis, evidence: LocalEvidence, *, revi
     conclusion_type = ConclusionType.INCONCLUSIVA if invalidated else analysis.conclusion_type
     return {
         "status": "conflito" if invalidated else "validada",
+        "consistency_conflicts": consistency,
         "reasons": reasons,
         "requires_review": not reviewed and (invalidated or analysis.requer_auditoria or impossible),
         "suspeita_ia": ai_verdict or (len(anomalous) >= 2 and detector_high),

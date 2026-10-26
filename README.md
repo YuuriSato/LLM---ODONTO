@@ -207,6 +207,10 @@ O conjunto atual ainda nao tem tamanho nem diversidade para estimar acuracia.
 ## Privacidade e retencao
 
 Uploads, historico, cache, datasets e `.env` sao privados e ignorados no Git.
+Para transferir imagens e historico entre maquinas autorizadas por um canal
+privado, use [Compartilhamento privado de imagens](docs/PRIVATE_DATASET_SYNC.md).
+O pacote nunca deve ser anexado ao repositorio publico. Analises anteriores
+nao se tornam rotulos de fine-tuning automaticamente.
 Arquivos ja publicados continuam em commits antigos: retirar do indice nao apaga
 o historico remoto. Uma limpeza desse historico exige uma operacao coordenada.
 O servidor escuta somente em loopback e rejeita Host/Origin externos; nao e uma
