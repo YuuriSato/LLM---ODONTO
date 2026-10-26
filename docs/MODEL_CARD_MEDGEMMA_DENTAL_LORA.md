@@ -26,3 +26,9 @@ O adaptador não foi validado para fotografias intraorais, radiografias de orige
 ## Próxima avaliação necessária
 
 Criar um manifesto revisado com procedência, rótulo, grupo e divisão por grupo. Só então medir métricas por classe no conjunto de teste que permaneceu inacessível durante a configuração e o treino.
+
+## Exportação GGUF local — 26/10/2026
+
+O adaptador foi fundido ao mesmo snapshot do `google/medgemma-1.5-4b-it` usado como base e convertido para GGUF Q4_K_M. O projetor visual foi convertido separadamente. Os arquivos ficam em `fine_tuning/exports/medgemma-1.5-4b-it/2026-10-24-lora/`, pasta ignorada pelo Git. O LM Studio carregou o modelo como `medgemma-dental-lora-1.5`, identificou capacidade visual e respondeu a uma chamada local com imagem. O cliente do projeto descobriu esse identificador entre os modelos visuais carregados.
+
+Esse teste comprova carregamento e geração, não qualidade: um controle sem imagem produziu exatamente a mesma resposta que o teste com imagem, e a execução pelo `llama-mtmd-cli` gerou texto repetitivo. O modelo continua experimental. Não trate o veredito como evidência visual confiável até haver avaliação independente por grupos de paciente/original.
