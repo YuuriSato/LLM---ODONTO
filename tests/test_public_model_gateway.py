@@ -4,7 +4,7 @@ import json
 import threading
 import unittest
 from http.server import ThreadingHTTPServer
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from scripts.public_model_gateway import MODEL, make_handler
 
@@ -53,6 +53,33 @@ class PublicModelGatewayTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("streaming", body["error"]["message"])
         upstream.assert_not_called()
+
+    def test_telemetry_requires_key_and_omits_prompt(self):
+        self.assertEqual(self.request("GET", "/v1/telemetry", authorized=False)[0], 401)
+        secret_prompt = "private-prompt-never-log-this"
+        upstream_response = MagicMock()
+        upstream_response.status = 200
+        upstream_response.read.return_value = json.dumps({
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {"prompt_tokens": 8, "completion_tokens": 2, "total_tokens": 10},
+        }).encode()
+        upstream_response.__enter__.return_value = upstream_response
+        with patch("scripts.public_model_gateway.urlopen", return_value=upstream_response):
+            self.assertEqual(self.request("POST", "/v1/chat/completions", {
+                "model": MODEL, "messages": [{"role": "user", "content": secret_prompt}],
+                "max_tokens": 8,
+            })[0], 200)
+        self.assertEqual(self.request("POST", "/v1/chat/completions", {
+            "model": MODEL, "messages": [{"role": "user", "content": secret_prompt}],
+            "stream": True,
+        })[0], 400)
+        status, telemetry = self.request("GET", "/v1/telemetry")
+        self.assertEqual(status, 200)
+        self.assertEqual(telemetry["summary"]["total_requests_since_start"], 2)
+        self.assertEqual([event["status"] for event in telemetry["events"]], [400, 200])
+        self.assertEqual(telemetry["events"][1]["usage"]["total_tokens"], 10)
+        self.assertNotIn(secret_prompt, json.dumps(telemetry))
+        self.assertNotIn(self.key, json.dumps(telemetry))
 
 
 if __name__ == "__main__":

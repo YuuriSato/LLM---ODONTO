@@ -6,11 +6,14 @@ The sole exposed model is experimental and its predictions are not validated.
 from __future__ import annotations
 
 import argparse
+from collections import deque
+from datetime import datetime, timezone
 import hmac
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from threading import BoundedSemaphore
+from threading import BoundedSemaphore, Lock
+from time import monotonic
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -18,13 +21,41 @@ from urllib.request import Request, urlopen
 MODEL = "medgemma-dental-lora-1.5"
 MAX_BODY_BYTES = 16 * 1024 * 1024
 MAX_COMPLETION_TOKENS = 1024
+MAX_TELEMETRY_EVENTS = 200
 
 
 def make_handler(secret: str, upstream: str):
     semaphore = BoundedSemaphore(1)
+    events = deque(maxlen=MAX_TELEMETRY_EVENTS)
+    events_lock = Lock()
+    request_count = 0
+
+    def record(status: int, started: float, timestamp: str, usage: dict | None) -> None:
+        nonlocal request_count
+        event = {
+            "timestamp": timestamp,
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "model": MODEL,
+            "status": status,
+            "duration_ms": round((monotonic() - started) * 1000),
+        }
+        if usage:
+            event["usage"] = usage
+        with events_lock:
+            request_count += 1
+            event["id"] = request_count
+            events.append(event)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "DentalModelGateway/1"
+
+        def send_response(self, code: int, message: str | None = None) -> None:
+            if (self.command == "POST" and self.path == "/v1/chat/completions"
+                    and hasattr(self, "_telemetry_started") and not getattr(self, "_telemetry_recorded", False)):
+                record(code, self._telemetry_started, self._telemetry_timestamp, getattr(self, "_telemetry_usage", None))
+                self._telemetry_recorded = True
+            super().send_response(code, message)
 
         def log_message(self, format_string, *args):
             # Do not log image bodies, prompts or bearer tokens.
@@ -48,10 +79,23 @@ def make_handler(secret: str, upstream: str):
                 self.respond(401, {"error": {"message": "API key obrigatória", "type": "authentication_error"}})
             elif self.path == "/v1/models":
                 self.respond(200, {"object": "list", "data": [{"id": MODEL, "object": "model", "owned_by": "local"}]})
+            elif self.path == "/v1/telemetry":
+                with events_lock:
+                    recent = list(reversed(events))
+                    total = request_count
+                self.respond(200, {"model": MODEL, "summary": {
+                    "total_requests_since_start": total,
+                    "recent_successes": sum(200 <= item["status"] < 400 for item in recent),
+                    "recent_failures": sum(item["status"] >= 400 for item in recent),
+                    "stored_events": len(recent),
+                }, "events": recent})
             else:
                 self.respond(404, {"error": {"message": "Endpoint não disponível", "type": "invalid_request_error"}})
 
         def do_POST(self) -> None:
+            if self.path == "/v1/chat/completions":
+                self._telemetry_started = monotonic()
+                self._telemetry_timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
             if not self.authorized():
                 self.respond(401, {"error": {"message": "API key obrigatória", "type": "authentication_error"}})
                 return
@@ -104,6 +148,16 @@ def make_handler(secret: str, upstream: str):
                 if len(answer) > 8 * 1024 * 1024:
                     self.respond(502, {"error": {"message": "Resposta acima do limite", "type": "upstream_error"}})
                     return
+                if 200 <= status < 300:
+                    try:
+                        raw_usage = json.loads(answer).get("usage", {})
+                        if isinstance(raw_usage, dict):
+                            self._telemetry_usage = {
+                                key: raw_usage[key] for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+                                if type(raw_usage.get(key)) is int and raw_usage[key] >= 0
+                            }
+                    except (ValueError, AttributeError):
+                        pass
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Cache-Control", "no-store")
