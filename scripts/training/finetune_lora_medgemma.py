@@ -72,6 +72,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learning-rate", type=float, default=2e-4)
     parser.add_argument("--save-steps", type=int, default=0,
                         help="Salva checkpoints a cada N passos; 0 usa salvamento por epoca.")
+    parser.add_argument("--save-total-limit", type=int, default=2,
+                        help="Mantem apenas os N checkpoints mais recentes para limitar uso de disco.")
     parser.add_argument("--max-length", type=int, default=512)
     parser.add_argument(
         "--image-size",
@@ -387,6 +389,7 @@ def main() -> int:
         logging_steps=1,
         save_strategy="steps" if args.save_steps > 0 else "epoch",
         save_steps=args.save_steps if args.save_steps > 0 else 500,
+        save_total_limit=args.save_total_limit,
         report_to="none",
         remove_unused_columns=False,
         gradient_checkpointing=args.gradient_checkpointing,
