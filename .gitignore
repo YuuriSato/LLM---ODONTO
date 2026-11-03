@@ -19,6 +19,7 @@ runtime/*.sqlite3*
 runtime/evaluations/
 runtime/datasets/
 runtime/provider_checks/
+runtime/benchmarks/
 runtime/backups/
 runtime/private_bundles/
 runtime/feedback-training-*/
