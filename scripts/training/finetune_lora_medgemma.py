@@ -10,7 +10,7 @@ from types import MethodType
 
 import torch
 from PIL import Image
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
 from torch.utils.data import Dataset
 from transformers import (
     AutoModelForImageTextToText,
@@ -50,6 +50,8 @@ VALID_LABELS = {
     "IA_EDITADA",
     "IA_GERADA",
     "EDICAO_TRADICIONAL",
+    "MODIFICADO",
+    "IA_GERADA_EDITADA",
 }
 
 
@@ -62,6 +64,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-jsonl", default="data/codex_training.jsonl")
     parser.add_argument("--image-root", default="data/dataset_dental")
     parser.add_argument("--output-dir", default="runtime/outputs/medgemma-dental-lora")
+    parser.add_argument("--init-adapter", default=None,
+                        help="Continua o ajuste de um adaptador LoRA existente, sem alterar os arquivos de origem.")
     parser.add_argument("--epochs", type=float, default=2.0)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--grad-accum", type=int, default=8)
@@ -345,7 +349,15 @@ def build_model_and_processor(args: argparse.Namespace):
         task_type="CAUSAL_LM",
         target_modules=target_modules,
     )
-    model = get_peft_model(model, lora_config)
+    if args.init_adapter:
+        source_adapter = Path(args.init_adapter)
+        if not (source_adapter / "adapter_config.json").is_file():
+            raise ValueError(f"Adaptador inicial ausente: {source_adapter}")
+        if source_adapter.resolve() == Path(args.output_dir).resolve():
+            raise ValueError("O destino deve ser diferente do adaptador inicial.")
+        model = PeftModel.from_pretrained(model, source_adapter, is_trainable=True)
+    else:
+        model = get_peft_model(model, lora_config)
     if args.gradient_checkpointing:
         model.gradient_checkpointing_enable()
         model.enable_input_require_grads()

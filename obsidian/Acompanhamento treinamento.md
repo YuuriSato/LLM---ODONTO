@@ -17,3 +17,9 @@ Próxima dependência concreta: receber o pacote privado e verificar procedênci
 O pacote privado foi posteriormente importado, e o treino LoRA MedGemma 1.5 terminou em 476 passos. A exportação local fundiu o adaptador ao modelo base, gerou um GGUF Q4_K_M e um projetor visual separado em `../fine_tuning/exports/medgemma-1.5-4b-it/2026-10-24-lora/`. O LM Studio carregou `medgemma-dental-lora-1.5`, reconheceu visão e respondeu a uma imagem pela API local. Os arquivos de pesos e o manifesto com hashes permanecem fora do Git.
 
 O resultado é **experimental**: a mesma resposta apareceu num controle sem imagem, e o teste multimodal direto gerou texto repetitivo. A exportação funciona tecnicamente, mas ainda não comprova que o modelo usa a imagem nem que classifica autenticidade corretamente. [[Validacao]] continua necessária antes de qualquer conclusão sobre desempenho.
+
+## 03/11/2026 — continuação com marcações do desenvolvedor
+
+O histórico privado preservou 21 marcações diretas para 16 imagens distintas. Após agrupar por hash, uma imagem com três rótulos conflitantes foi excluída. O novo conjunto privado contém 15 imagens: 9 marcadas `IA_GERADA_EDITADA`, 4 `REAL` e 2 `MODIFICADO`. O script de preparação bloqueia hashes reservados no teste do manifesto. Não promove marcações do operador automaticamente a procedência verificada.
+
+Um novo treino QLoRA de uma época terminou em 15 passos, partindo do adaptador anterior e salvando em `../runtime/outputs/medgemma-dental-lora-feedback-20261103/`. Os pesos mudaram e são finitos. O log mostra norma de gradiente indefinida nos seis primeiros passos e finita nos restantes. A perda média de treino foi 1,3865. Esta execução não possui avaliação independente e ainda não foi exportada para GGUF nem instalada no LM Studio. Consulte `../docs/MODEL_CARD_MEDGEMMA_DENTAL_LORA.md`.

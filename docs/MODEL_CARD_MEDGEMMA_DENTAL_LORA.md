@@ -32,3 +32,11 @@ Criar um manifesto revisado com procedência, rótulo, grupo e divisão por grup
 O adaptador foi fundido ao mesmo snapshot do `google/medgemma-1.5-4b-it` usado como base e convertido para GGUF Q4_K_M. O projetor visual foi convertido separadamente. Os arquivos ficam em `fine_tuning/exports/medgemma-1.5-4b-it/2026-10-24-lora/`, pasta ignorada pelo Git. O LM Studio carregou o modelo como `medgemma-dental-lora-1.5`, identificou capacidade visual e respondeu a uma chamada local com imagem. O cliente do projeto descobriu esse identificador entre os modelos visuais carregados.
 
 Esse teste comprova carregamento e geração, não qualidade: um controle sem imagem produziu exatamente a mesma resposta que o teste com imagem, e a execução pelo `llama-mtmd-cli` gerou texto repetitivo. O modelo continua experimental. Não trate o veredito como evidência visual confiável até haver avaliação independente por grupos de paciente/original.
+
+## Continuação com feedback do desenvolvedor — 03/11/2026
+
+As marcações diretas do histórico foram reconciliadas por SHA-256: 21 registros apontavam para 16 imagens distintas. Uma imagem recebeu três rótulos conflitantes e foi excluída. Quinze imagens entraram na nova execução privada: 9 `IA_GERADA_EDITADA`, 4 `REAL` e 2 `MODIFICADO`. Amostras reservadas no manifesto como teste foram bloqueadas. O script `scripts/training/prepare_developer_feedback.py` gerou o JSONL privado e um relatório de exclusões em `runtime/feedback-training-20261103/`.
+
+O adaptador anterior foi continuado em `runtime/outputs/medgemma-dental-lora-feedback-20261103/` com QLoRA NF4, uma época, 15 passos, taxa de aprendizado `1e-5`, batch 1 e gradient checkpointing. A perda média registrada foi 1,3865. Os 476 tensores do novo adaptador diferem dos anteriores e são finitos. Os seis primeiros passos registraram `grad_norm=nan`; os seguintes tiveram norma finita. O log e os parâmetros ficam na pasta privada da execução.
+
+Estas marcações representam feedback do operador, sem confirmação independente de procedência. Não houve conjunto de teste independente para esta execução nem comparação de acurácia com o adaptador anterior. O GGUF instalado e o serviço Sato Company **não foram substituídos** por este novo adaptador. A validação deve anteceder qualquer atualização do modelo operacional.
