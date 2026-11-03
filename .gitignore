@@ -23,6 +23,7 @@ runtime/benchmarks/
 runtime/backups/
 runtime/private_bundles/
 runtime/feedback-training-*/
+runtime/combined-training-*/
 runtime/dashboard-training.json
 runtime/.*.lock
 runtime/*.log

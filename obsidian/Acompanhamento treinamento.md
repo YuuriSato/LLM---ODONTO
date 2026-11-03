@@ -23,3 +23,9 @@ O resultado é **experimental**: a mesma resposta apareceu num controle sem imag
 O histórico privado preservou 21 marcações diretas para 16 imagens distintas. Após agrupar por hash, uma imagem com três rótulos conflitantes foi excluída. O novo conjunto privado contém 15 imagens: 9 marcadas `IA_GERADA_EDITADA`, 4 `REAL` e 2 `MODIFICADO`. O script de preparação bloqueia hashes reservados no teste do manifesto. Não promove marcações do operador automaticamente a procedência verificada.
 
 Um novo treino QLoRA de uma época terminou em 15 passos, partindo do adaptador anterior e salvando em `../runtime/outputs/medgemma-dental-lora-feedback-20261103/`. Os pesos mudaram e são finitos. O log mostra norma de gradiente indefinida nos seis primeiros passos e finita nos restantes. A perda média de treino foi 1,3865. Esta execução não possui avaliação independente e ainda não foi exportada para GGUF nem instalada no LM Studio. Consulte `../docs/MODEL_CARD_MEDGEMMA_DENTAL_LORA.md`.
+
+## 03/11/2026 — novo treino com 1.917 imagens
+
+Foi criado um conjunto privado com 1.902 registros legados e 15 marcações diretas sem conflito. São 1.917 caminhos de imagem distintos. O manifesto e o JSONL estão em `../runtime/combined-training-20261103/`, ignorados pelo Git. A distribuição por classe e o hash do conjunto estão no [[../docs/MODEL_CARD_MEDGEMMA_DENTAL_LORA|cartão do modelo]].
+
+O treino foi iniciado a partir do adaptador de feedback, com QLoRA NF4, uma época e 240 passos de otimização previstos. Os arquivos desta execução ficam em `../runtime/outputs/medgemma-dental-lora-combined-20261103/`, com salvamento a cada 25 passos. O processo carregou os pesos e ocupou a GPU; a conclusão, qualidade e exportação GGUF ainda não foram verificadas. As limitações dos rótulos e a ausência de teste independente continuam válidas.

@@ -70,6 +70,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--grad-accum", type=int, default=8)
     parser.add_argument("--learning-rate", type=float, default=2e-4)
+    parser.add_argument("--save-steps", type=int, default=0,
+                        help="Salva checkpoints a cada N passos; 0 usa salvamento por epoca.")
     parser.add_argument("--max-length", type=int, default=512)
     parser.add_argument(
         "--image-size",
@@ -383,7 +385,8 @@ def main() -> int:
         bf16=not args.cpu and torch.cuda.is_bf16_supported(including_emulation=False),
         fp16=not args.cpu and not torch.cuda.is_bf16_supported(including_emulation=False),
         logging_steps=1,
-        save_strategy="epoch",
+        save_strategy="steps" if args.save_steps > 0 else "epoch",
+        save_steps=args.save_steps if args.save_steps > 0 else 500,
         report_to="none",
         remove_unused_columns=False,
         gradient_checkpointing=args.gradient_checkpointing,
