@@ -28,4 +28,8 @@ Um novo treino QLoRA de uma época terminou em 15 passos, partindo do adaptador 
 
 O primeiro conjunto privado combinou 1.902 registros legados e 15 marcações diretas sem conflito. Embora tivesse 1.917 caminhos diferentes, uma auditoria por conteúdo encontrou 516 duplicatas exatas, quase todas `REAL`. A primeira tentativa foi interrompida antes do primeiro passo, preservando seus logs. O conjunto corrigido contém 1.401 imagens únicas em `../runtime/combined-deduplicated-20261103/`, ignorado pelo Git. A distribuição por classe e o hash estão no [[../docs/MODEL_CARD_MEDGEMMA_DENTAL_LORA|cartão do modelo]].
 
-O treino corrigido foi iniciado a partir do adaptador de feedback, com QLoRA NF4, uma época e 176 passos de otimização previstos. Os arquivos ficam em `../runtime/outputs/medgemma-dental-lora-deduplicated-20261103/`, com salvamento a cada 25 passos e retenção dos dois checkpoints mais recentes. A conclusão, qualidade e exportação GGUF ainda não foram verificadas. As limitações dos rótulos e a ausência de teste independente continuam válidas.
+O treino corrigido partiu do adaptador de feedback, com QLoRA NF4, uma época e 176 passos de otimização. Os arquivos ficam em `../runtime/outputs/medgemma-dental-lora-deduplicated-20261103/`, com salvamento a cada 25 passos e retenção dos dois checkpoints mais recentes.
+
+## 04/11/2026 — conclusão da nova execução
+
+`trainer_state.json` confirma 176 passos; `train_results.json` registra uma época, 44.188 segundos e perda média de treino 0,004195. O adaptador final (SHA-256 `1c7b63def6b12c06f091792437d4d114e5ae84227a8da610057acf13f70ff062`) contém 476 tensores LoRA finitos, todos diferentes do adaptador inicial. Os checkpoints 175 e 176 foram preservados. Isto comprova a execução e o salvamento dos pesos, mas não qualidade de classificação. Ainda não há teste independente nem exportação GGUF deste adaptador. Consulte o [[../docs/MODEL_CARD_MEDGEMMA_DENTAL_LORA|cartão do modelo]].
