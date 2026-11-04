@@ -297,6 +297,13 @@ class IntegrityTests(unittest.TestCase):
             self.assertEqual(get_settings().provider, "gemini")
         with patch("app.ai.config.load_project_env"), patch.dict("os.environ", {"LLM_PROVIDER": "ollama"}, clear=True):
             self.assertEqual(get_settings().provider, "ollama")
+        with patch("app.ai.config.load_project_env"), patch.dict("os.environ", {
+            "AI_PROVIDER": "lmstudio", "LM_STUDIO_MODEL": "medgemma-dental-lora-1.5",
+            "GEMINI_MODEL": "gemini-flash-latest", "APP_ENV": "development",
+        }, clear=True):
+            settings = get_settings()
+            self.assertEqual(settings.model, "medgemma-dental-lora-1.5")
+            settings.validate()
         with self.assertRaises(ValueError):
             AISettings(api_key="test", model="unknown-model").validate_production()
         AISettings(api_key="test", model="gemini-2.5-flash").validate_production()

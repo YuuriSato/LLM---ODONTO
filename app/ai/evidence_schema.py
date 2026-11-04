@@ -2,9 +2,10 @@
 from copy import deepcopy
 
 from app.ai.schemas import ForensicAnalysis, IntegrityAnalysis, LocalEvidence
+from app.ai.consistency import measured_quality_support
 
 
-SCHEMA_MODE = 'evidence-bound-1'
+SCHEMA_MODE = 'evidence-bound-2'
 
 
 def reference_choices(record):
@@ -44,11 +45,9 @@ def bound_integrity_schema(evidence: LocalEvidence) -> dict:
 
     # Visual observations cannot masquerade as measured evidence, and vice versa.
     visual = deepcopy(definitions['Claim'])
-    visual['properties']['descricao']['maxLength'] = 180
     visual['properties']['fonte'] = {'type': 'string', 'const': 'visual'}
     visual['properties']['referencias']['maxItems'] = 0
     computational = deepcopy(definitions['Claim'])
-    computational['properties']['descricao']['maxLength'] = 180
     computational['properties']['fonte'] = {'type': 'string', 'const': 'computacional'}
     choices = [choice for record in evidence.records for choice in reference_choices(record)]
     computational['properties']['referencias'].update(items={'anyOf': choices}, minItems=1, maxItems=2)
@@ -56,19 +55,20 @@ def bound_integrity_schema(evidence: LocalEvidence) -> dict:
 
     for field in definitions['VisualAnalysis']['properties'].values():
         field['maxItems'] = 2
-        field['items']['maxLength'] = 120
     quality_variants = []
+    quality_support = measured_quality_support(evidence)
     for issue_type, evidence_id in (
         ('desfoque_extremo', 'nitidez'),
         ('resolucao_insuficiente', 'dimensoes'),
     ):
+        if quality_support[issue_type] is False:
+            continue
         issue_references = reference_choices(records[evidence_id])
         if not issue_references:
             continue
         variant = deepcopy(definitions['QualityIssue'])
         variant['properties']['tipo'] = {'type': 'string', 'const': issue_type}
         variant['properties']['fonte'] = {'type': 'string', 'const': 'computacional'}
-        variant['properties']['descricao']['maxLength'] = 180
         variant['properties']['referencias'].update(
             items={'anyOf': issue_references}, minItems=1, maxItems=2
         )
@@ -77,7 +77,6 @@ def bound_integrity_schema(evidence: LocalEvidence) -> dict:
         variant = deepcopy(definitions['QualityIssue'])
         variant['properties']['tipo'] = {'type': 'string', 'const': issue_type}
         variant['properties']['fonte'] = {'type': 'string', 'const': 'visual'}
-        variant['properties']['descricao']['maxLength'] = 180
         variant['properties']['referencias']['maxItems'] = 0
         quality_variants.append(variant)
     definitions['QualityIssue'] = {'anyOf': quality_variants}
@@ -85,8 +84,6 @@ def bound_integrity_schema(evidence: LocalEvidence) -> dict:
     schema['properties']['evidencias_contrarias']['maxItems'] = 3
     schema['properties']['problemas_qualidade']['maxItems'] = 2
     schema['properties']['limitacoes']['maxItems'] = 3
-    schema['properties']['limitacoes']['items']['maxLength'] = 180
-    schema['properties']['justificativa']['maxLength'] = 320
 
     variants = []
     for conclusion, verdicts, quality_min, quality_max in (

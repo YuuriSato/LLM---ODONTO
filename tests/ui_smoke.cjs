@@ -186,6 +186,10 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     await page.locator('#retryAnalysis').click();
     await page.waitForFunction(() => document.querySelector('#verdict')?.textContent === 'Impossível de avaliar');
     assert.equal(await page.evaluate(() => sessionStorage.getItem('perito.activeJob')), null);
+    job = { state: 'falhou', result: { status: 'nao_concluida', error_code: 'inconsistent_model_output',
+      error: 'A justificativa contradiz as medições após a revisão.', verdict: null } };
+    await page.locator('#submit').click();
+    await page.waitForFunction(() => document.querySelector('#verdict')?.textContent === 'Resposta do modelo contraditória');
     assert.deepEqual(errors, []);
     await page.screenshot({ path: 'logs/ui-smoke-mobile.png', fullPage: true });
     console.log('UI: 25 viewport/page checks; comparison, JSON download, model persistence, reconnect, cancellation, failure retry and impossible/inconclusive states passed.');

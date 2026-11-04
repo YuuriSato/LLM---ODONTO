@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -9,23 +10,48 @@ from types import MethodType
 
 import torch
 from PIL import Image
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
 from torch.utils.data import Dataset
 from transformers import (
     AutoModelForImageTextToText,
     AutoProcessor,
+    BitsAndBytesConfig,
     Trainer,
+    TrainerCallback,
     TrainingArguments,
 )
 
 
 DEFAULT_MODEL_ID = "google/medgemma-1.5-4b-it"
+
+
+class DashboardProgress(TrainerCallback):
+    def on_log(self, args, state, control, **kwargs):
+        if not state.is_world_process_zero:
+            return
+        output = Path(args.output_dir)
+        output.mkdir(parents=True, exist_ok=True)
+        data = {"global_step": state.global_step, "max_steps": state.max_steps,
+                "epoch": state.epoch, "log_history": state.log_history[-200:],
+                "updated_at": time.time()}
+        staging = output / "dashboard-progress.tmp"
+        try:
+            staging.write_text(json.dumps(data, allow_nan=False), encoding="utf-8")
+            staging.replace(output / "dashboard-progress.json")
+        except (OSError, ValueError):
+            # Optional dashboard reporting must never interrupt optimization.
+            pass
 VALID_LABELS = {
     "REAL",
     "ALTERADA_MANUALMENTE",
     "ALTERADA_DIGITALMENTE",
     "IA",
     "INDETERMINADO",
+    "IA_EDITADA",
+    "IA_GERADA",
+    "EDICAO_TRADICIONAL",
+    "MODIFICADO",
+    "IA_GERADA_EDITADA",
 }
 
 
@@ -34,13 +60,20 @@ def parse_args() -> argparse.Namespace:
         description="Fine-tuning LoRA/QLoRA do MedGemma 1.5 4B para classificar imagens reais, alteradas ou IA.",
     )
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
+    parser.add_argument("--load-in-4bit", action="store_true", help="QLoRA NF4 com double quantization em uma GPU CUDA.")
     parser.add_argument("--dataset-jsonl", default="data/codex_training.jsonl")
     parser.add_argument("--image-root", default="data/dataset_dental")
     parser.add_argument("--output-dir", default="runtime/outputs/medgemma-dental-lora")
+    parser.add_argument("--init-adapter", default=None,
+                        help="Continua o ajuste de um adaptador LoRA existente, sem alterar os arquivos de origem.")
     parser.add_argument("--epochs", type=float, default=2.0)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--grad-accum", type=int, default=8)
     parser.add_argument("--learning-rate", type=float, default=2e-4)
+    parser.add_argument("--save-steps", type=int, default=0,
+                        help="Salva checkpoints a cada N passos; 0 usa salvamento por epoca.")
+    parser.add_argument("--save-total-limit", type=int, default=2,
+                        help="Mantem apenas os N checkpoints mais recentes para limitar uso de disco.")
     parser.add_argument("--max-length", type=int, default=512)
     parser.add_argument(
         "--image-size",
@@ -132,8 +165,8 @@ class DentalImageJsonlDataset(Dataset):
             raise FileNotFoundError(f"Imagem nao encontrada: {image_path}")
 
         image = Image.open(image_path).convert("RGB")
-        user_prompt = make_user_prompt()
-        answer = make_answer(row)
+        user_prompt = row.get("prompt", make_user_prompt())
+        answer = row.get("answer", make_answer(row))
         messages = [
             {
                 "role": "user",
@@ -187,7 +220,6 @@ class VisionLanguageCollator:
             truncation=True,
             max_length=self.max_length,
         )
-        batch["interpolate_pos_encoding"] = True
         labels = batch["input_ids"].clone()
         labels[batch["attention_mask"] == 0] = -100
 
@@ -201,12 +233,16 @@ class VisionLanguageCollator:
             )
             prompt_length = int(prompt_inputs["input_ids"].shape[-1])
             labels[index, :prompt_length] = -100
+            if not (labels[index] != -100).any():
+                raise ValueError("Resposta totalmente truncada: aumente max-length antes de treinar.")
 
         batch["labels"] = labels
         return batch
 
 
 def build_model_and_processor(args: argparse.Namespace):
+    if args.load_in_4bit and (args.cpu or not torch.cuda.is_available()):
+        raise ValueError("Esta configuração QLoRA requer CUDA; não combine --cpu e --load-in-4bit.")
     local_files_only = Path(args.model_id).exists()
     processor = AutoProcessor.from_pretrained(
         args.model_id,
@@ -225,19 +261,32 @@ def build_model_and_processor(args: argparse.Namespace):
             "width": args.image_size,
         }
 
-    device_map = {"": "cpu"} if args.cpu else "auto"
+    device_map = {"": "cpu"} if args.cpu else ({"": 0} if args.load_in_4bit else "auto")
     torch_dtype = (
         torch.bfloat16
-        if (not args.cpu or args.cpu_dtype == "bfloat16")
-        else torch.float32
+        if ((not args.cpu and torch.cuda.is_bf16_supported(including_emulation=False)) or (args.cpu and args.cpu_dtype == "bfloat16"))
+        else (torch.float32 if args.cpu else torch.float16)
     )
+    quantization_kwargs = {}
+    if args.load_in_4bit:
+        quantization_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=torch_dtype,
+        )
     model = AutoModelForImageTextToText.from_pretrained(
         args.model_id,
         device_map=device_map,
         torch_dtype=torch_dtype,
         low_cpu_mem_usage=True,
         local_files_only=local_files_only,
+        **quantization_kwargs,
     )
+    if args.load_in_4bit:
+        model = prepare_model_for_kbit_training(
+            model, use_gradient_checkpointing=args.gradient_checkpointing,
+        )
     model.config.use_cache = False
     if args.image_size > 0 and args.image_size != 896:
         vision_tower = model.model.vision_tower
@@ -254,6 +303,8 @@ def build_model_and_processor(args: argparse.Namespace):
         def get_frozen_image_features(self, *feature_args: Any, **feature_kwargs: Any):
             with torch.no_grad():
                 image_features = original_get_image_features(*feature_args, **feature_kwargs)
+            if isinstance(image_features, torch.Tensor):
+                return image_features.detach()
             image_features.last_hidden_state = image_features.last_hidden_state.detach()
             image_features.pooler_output = image_features.pooler_output.detach()
             return image_features
@@ -302,7 +353,15 @@ def build_model_and_processor(args: argparse.Namespace):
         task_type="CAUSAL_LM",
         target_modules=target_modules,
     )
-    model = get_peft_model(model, lora_config)
+    if args.init_adapter:
+        source_adapter = Path(args.init_adapter)
+        if not (source_adapter / "adapter_config.json").is_file():
+            raise ValueError(f"Adaptador inicial ausente: {source_adapter}")
+        if source_adapter.resolve() == Path(args.output_dir).resolve():
+            raise ValueError("O destino deve ser diferente do adaptador inicial.")
+        model = PeftModel.from_pretrained(model, source_adapter, is_trainable=True)
+    else:
+        model = get_peft_model(model, lora_config)
     if args.gradient_checkpointing:
         model.gradient_checkpointing_enable()
         model.enable_input_require_grads()
@@ -325,10 +384,12 @@ def main() -> int:
         per_device_train_batch_size=args.batch_size,
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.learning_rate,
-        bf16=False if args.cpu else True,
-        fp16=False,
-        logging_steps=10,
-        save_strategy="epoch",
+        bf16=not args.cpu and torch.cuda.is_bf16_supported(including_emulation=False),
+        fp16=not args.cpu and not torch.cuda.is_bf16_supported(including_emulation=False),
+        logging_steps=1,
+        save_strategy="steps" if args.save_steps > 0 else "epoch",
+        save_steps=args.save_steps if args.save_steps > 0 else 500,
+        save_total_limit=args.save_total_limit,
         report_to="none",
         remove_unused_columns=False,
         gradient_checkpointing=args.gradient_checkpointing,
@@ -341,8 +402,11 @@ def main() -> int:
         args=training_args,
         train_dataset=dataset,
         data_collator=collator,
+        callbacks=[DashboardProgress()],
     )
-    trainer.train()
+    result = trainer.train()
+    trainer.save_metrics("train", result.metrics)
+    trainer.save_state()
 
     output_dir = Path(args.output_dir)
     model.save_pretrained(output_dir)

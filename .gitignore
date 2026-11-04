@@ -1,4 +1,9 @@
 .venv/
+.venv-neural/
+.venv-finetune/
+obsidian/Privado/
+obsidian/.obsidian/workspace*.json
+obsidian/Gerado/
 node_modules/
 frontend/dist/
 __pycache__/
@@ -14,8 +19,15 @@ runtime/*.sqlite3*
 runtime/evaluations/
 runtime/datasets/
 runtime/provider_checks/
+runtime/benchmarks/
 runtime/backups/
+runtime/private_bundles/
+runtime/feedback-training-*/
+runtime/combined-training-*/
+runtime/combined-deduplicated-*/
+runtime/dashboard-training.json
 runtime/.*.lock
+runtime/*.log
 
 .env
 .DS_Store

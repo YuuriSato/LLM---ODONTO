@@ -51,7 +51,9 @@ class EvaluationRunnerTests(unittest.TestCase):
             rows = evaluate_samples(samples, self.root / 'manifest.json', self.settings, output)
         pipeline.assert_called_once()
         self.assertEqual(pipeline.call_args.kwargs['calibration'], {})
-        self.assertEqual(pipeline.call_args.args, (self.root / 'first.png', None))
+        # Windows runners may expose TEMP through an 8.3 alias (RUNNER~1).
+        # The evaluator resolves paths before passing them to the pipeline.
+        self.assertEqual(pipeline.call_args.args, ((self.root / 'first.png').resolve(), None))
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]['error_code'], 'timeout')
         report = json.loads((output / 'report.json').read_text())

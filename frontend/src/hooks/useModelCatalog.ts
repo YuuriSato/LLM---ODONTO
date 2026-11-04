@@ -3,6 +3,7 @@ import { api } from '../api/client';
 import type { Agent, AgentCatalog, SelectedModel } from '../types';
 
 const STORAGE_KEY = 'perito.selectedModel';
+const DEFAULT_KEY = 'perito.serverDefaultModel';
 
 export function useModelCatalog() {
   const [catalog, setCatalog] = useState<AgentCatalog | null>(null);
@@ -16,7 +17,14 @@ export function useModelCatalog() {
     try {
       const payload = await api.getAgents();
       setCatalog(payload);
-      setSelectedValueState((current) => current || payload.default_model);
+      const previousDefault = localStorage.getItem(DEFAULT_KEY);
+      if (previousDefault !== payload.default_model) {
+        localStorage.setItem(DEFAULT_KEY, payload.default_model);
+        localStorage.setItem(STORAGE_KEY, payload.default_model);
+        setSelectedValueState(payload.default_model);
+      } else {
+        setSelectedValueState((current) => current || payload.default_model);
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Não foi possível consultar os modelos.');
     } finally {

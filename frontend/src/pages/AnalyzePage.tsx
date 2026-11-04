@@ -10,12 +10,13 @@ import { useAnalysisJob } from '../hooks/useAnalysisJob';
 import { useObjectUrl } from '../hooks/useObjectUrl';
 import type { SelectedModel } from '../types';
 
-export function AnalyzePage({ models, selected, selectedValue, catalogLoading, catalogError, setSelectedValue, refreshModels, showFullEvidence }: {
+export function AnalyzePage({ models, selected, selectedValue, catalogLoading, catalogError, localModelStatus, setSelectedValue, refreshModels, showFullEvidence }: {
   models: SelectedModel[];
   selected: SelectedModel | null;
   selectedValue: string;
   catalogLoading: boolean;
   catalogError: string;
+  localModelStatus: string;
   setSelectedValue: (value: string) => void;
   refreshModels: () => Promise<void>;
   showFullEvidence: boolean;
@@ -47,6 +48,7 @@ export function AnalyzePage({ models, selected, selectedValue, catalogLoading, c
             value={selectedValue}
             loading={catalogLoading}
             error={catalogError}
+            status={localModelStatus}
             onChange={setSelectedValue}
             onRefresh={refreshModels}
             disabled={analysis.busy}

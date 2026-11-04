@@ -27,6 +27,7 @@ class WebIntegrityTests(unittest.TestCase):
         uploads = self.folder / "uploads"
         uploads.mkdir()
         for key, value in (("DEVELOPMENT_MODE", False), ("AI_SETTINGS", AISettings(api_key="test")),
+                           ("LLM_PROVIDER", "gemini"), ("GEMINI_MODEL", "gemini-flash-latest"),
                            ("RUNTIME_DIR", self.folder),
                            ("UPLOAD_DIR", uploads), ("ANALYSIS_DIR", self.folder / "cache"),
                            ("HISTORY_FILE", self.folder / "history.json"), ("CALIBRATION_FILE", self.folder / "calibration.json")):

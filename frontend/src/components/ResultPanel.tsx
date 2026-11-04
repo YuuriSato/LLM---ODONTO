@@ -38,7 +38,7 @@ function resultPresentation(result: AnalysisResult) {
   const experimental = result.status === 'experimental' || result.experimental;
   const impossible = result.conclusion_type === 'impossivel_avaliar';
   const inconclusive = result.conclusion_type === 'inconclusiva' || (!result.conclusion_type && result.verdict === 'INDETERMINADO');
-  if (failed) return { label: 'Análise não concluída', tone: 'danger', Icon: XCircle };
+  if (failed) return { label: result.error_code === 'inconsistent_model_output' ? 'Resposta do modelo contraditória' : 'Análise não concluída', tone: 'danger', Icon: XCircle };
   if (impossible) return { label: 'Impossível de avaliar', tone: 'warning', Icon: AlertTriangle };
   if (experimental) return { label: `Teste experimental: ${verdictLabels[String(result.verdict)] || result.verdict || 'sem conclusão'}`, tone: 'warning', Icon: FlaskConical };
   if (inconclusive) return { label: 'Análise inconclusiva', tone: 'warning', Icon: AlertTriangle };

@@ -131,6 +131,12 @@ class IntegrityAnalysis(StrictModel):
     requer_auditoria: bool
 
 
+class VisualIntake(StrictModel):
+    modalidade: Literal["INTRAORAL", "RADIOGRAFIA", "PANORAMICA", "TOMOGRAFIA", "OUTRA"]
+    paineis: int = Field(ge=1, le=12)
+    descricao: str = Field(min_length=1)
+
+
 def validate_references(analysis: IntegrityAnalysis, evidence: LocalEvidence) -> None:
     records = {record.id: record for record in evidence.records}
 

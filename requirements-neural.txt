@@ -1,0 +1,4 @@
+# Separate optional environment; no change to the web application's dependency lock.
+torch>=2.6,<3
+numpy>=2,<3
+pillow>=12,<13
